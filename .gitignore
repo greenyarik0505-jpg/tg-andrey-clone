@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+bot_data.db
+.env
+*.log
+*.pdf
+*.html
+!webapp/static/*.html

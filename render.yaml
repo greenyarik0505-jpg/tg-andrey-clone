@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: andrey-clone-bot
+    env: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    envVars:
+      - key: ADMIN_ID
+        value: 7150170715
+      - key: PYTHON_VERSION
+        value: 3.11.9

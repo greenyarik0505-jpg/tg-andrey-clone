@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AI-Двойник: Панель Управления</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg-color: #0d1117;
+            --card-bg: #161b22;
+            --card-border: #30363d;
+            --accent: #58a6ff;
+            --accent-gradient: linear-gradient(135deg, #238636, #2ea043);
+            --danger: #f85149;
+            --warning: #d29922;
+            --text-main: #f0f6fc;
+            --text-muted: #8b949e;
+            --input-bg: #0b0e14;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            padding: 14px;
+            padding-bottom: 80px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--card-border);
+        }
+
+        .header h1 {
+            font-size: 18px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-badge {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 12px;
+            background: rgba(46, 160, 67, 0.2);
+            color: #3fb950;
+            border: 1px solid rgba(46, 160, 67, 0.4);
+        }
+
+        .status-badge.paused {
+            background: rgba(248, 81, 73, 0.2);
+            color: var(--danger);
+            border-color: rgba(248, 81, 73, 0.4);
+        }
+
+        /* Navigation Tabs */
+        .tabs {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 16px;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+        .tabs::-webkit-scrollbar { display: none; }
+
+        .tab-btn {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-muted);
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tab-btn.active {
+            background: #1f6feb;
+            color: #fff;
+            border-color: #58a6ff;
+        }
+
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Card container */
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 14px;
+        }
+
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        /* Form Controls */
+        .form-group {
+            margin-bottom: 14px;
+        }
+
+        .form-group:last-child {
+            margin-bottom: 0;
+        }
+
+        label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+
+        select, input[type="text"], input[type="password"], input[type="number"], textarea {
+            width: 100%;
+            background: var(--input-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-main);
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        select:focus, input:focus, textarea:focus {
+            border-color: var(--accent);
+        }
+
+        .key-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .toggle-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .toggle-row:last-child { border-bottom: none; }
+
+        .toggle-info h4 {
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .toggle-info p {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        /* Switch */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+            flex-shrink: 0;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #21262d;
+            border: 1px solid var(--card-border);
+            transition: .3s;
+            border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 2px;
+            bottom: 2px;
+            background-color: #8b949e;
+            transition: .3s;
+            border-radius: 50%;
+        }
+        input:checked + .slider {
+            background-color: #238636;
+            border-color: #2ea043;
+        }
+        input:checked + .slider:before {
+            transform: translateX(20px);
+            background-color: #ffffff;
+        }
+
+        /* Buttons */
+        .btn-primary {
+            width: 100%;
+            background: #238636;
+            color: #ffffff;
+            border: none;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-top: 10px;
+        }
+        .btn-primary:active { background: #2ea043; }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .stat-box {
+            background: var(--input-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+        }
+        .stat-val {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+        .stat-lbl {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Chat Testing Window */
+        .chat-sim {
+            background: #0b0e14;
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 12px;
+            min-height: 160px;
+            max-height: 250px;
+            overflow-y: auto;
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .msg-bubble {
+            max-width: 80%;
+            padding: 8px 12px;
+            border-radius: 12px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        .msg-user {
+            background: #1f6feb;
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 2px;
+        }
+        .msg-bot {
+            background: #21262d;
+            color: #e6edf3;
+            align-self: flex-start;
+            border-bottom-left-radius: 2px;
+            border: 1px solid var(--card-border);
+        }
+        .typing-indicator {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #238636;
+            color: white;
+            padding: 10px 18px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+            z-index: 1000;
+        }
+        .toast.show { opacity: 1; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>🎮 AI-Андрей <span>(11 лет)</span></h1>
+        <div id="statusBadge" class="status-badge">АКТИВЕН</div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('tab-neural')">🤖 Нейросеть</button>
+        <button class="tab-btn" onclick="switchTab('tab-behavior')">⚡ Поведение</button>
+        <button class="tab-btn" onclick="switchTab('tab-chats')">💬 Чаты</button>
+        <button class="tab-btn" onclick="switchTab('tab-persona')">🎯 Личность & Тест</button>
+        <button class="tab-btn" onclick="switchTab('tab-stats')">📊 Статистика</button>
+    </div>
+
+    <!-- TAB 1: NEURAL MODEL & KEYS -->
+    <div id="tab-neural" class="tab-content active">
+        <div class="card">
+            <div class="card-title">🧠 Выбор активной нейросети</div>
+            <div class="form-group">
+                <label>Модель для генерации ответов:</label>
+                <select id="activeModelSelect" onchange="onModelChange()">
+                    <!-- Populated dynamically -->
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Температура креативности (<span id="tempValue">0.75</span>):</label>
+                <input type="range" id="tempInput" min="0.1" max="1.0" step="0.05" value="0.75" oninput="document.getElementById('tempValue').innerText = this.value">
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">🔑 Хранилище API Ключей</div>
+            
+            <div class="form-group">
+                <label>Google Gemini API Key:</label>
+                <input type="password" id="key_gemini" placeholder="AIzaSy...">
+            </div>
+
+            <div class="form-group">
+                <label>OpenAI API Key (GPT-4o):</label>
+                <input type="password" id="key_openai" placeholder="sk-proj-...">
+            </div>
+
+            <div class="form-group">
+                <label>DeepSeek API Key (V3 / R1):</label>
+                <input type="password" id="key_deepseek" placeholder="sk-...">
+            </div>
+
+            <div class="form-group">
+                <label>Anthropic API Key (Claude):</label>
+                <input type="password" id="key_anthropic" placeholder="sk-ant-...">
+            </div>
+
+            <div class="form-group">
+                <label>Groq API Key (Llama 3):</label>
+                <input type="password" id="key_groq" placeholder="gsk_...">
+            </div>
+
+            <div class="form-group">
+                <label>OpenRouter API Key:</label>
+                <input type="password" id="key_openrouter" placeholder="sk-or-...">
+            </div>
+
+            <button class="btn-primary" onclick="saveSettings()">💾 Сохранить стандартные ключи</button>
+        </div>
+
+        <div class="card">
+            <div class="card-title">⚙️ Кастомный провайдер / Модель (OpenAI-compatible)</div>
+            <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">
+                Подходит для любых сторонних API (Ollama, Together, vLLM, OpenRouter, Mistral, Qwen, Any Proxy).
+            </p>
+
+            <div class="form-group">
+                <label>Base URL API (эндпоинт):</label>
+                <input type="text" id="customBaseUrl" placeholder="https://api.openai.com/v1 или https://openrouter.ai/api/v1">
+            </div>
+
+            <div class="form-group">
+                <label>Название модели (Model ID):</label>
+                <input type="text" id="customModelName" placeholder="например: deepseek-ai/DeepSeek-V3 или gpt-4.5-turbo">
+            </div>
+
+            <div class="form-group">
+                <label>Кастомный API Key (если требуется):</label>
+                <input type="password" id="customApiKey" placeholder="sk-...">
+            </div>
+
+            <button class="btn-primary" style="background:#1f6feb;" onclick="saveCustomSettings()">💾 Сохранить кастомного провайдера</button>
+        </div>
+    </div>
+
+    <!-- TAB 2: BEHAVIOR & TIMINGS -->
+    <div id="tab-behavior" class="tab-content">
+        <div class="card">
+            <div class="card-title">⚡ Имитация человека & Тайминги</div>
+
+            <div class="toggle-row">
+                <div class="toggle-info">
+                    <h4>Глобальная пауза бота</h4>
+                    <p>Отключить автоответ во всех чатах</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="pauseToggle" onchange="saveSettings()">
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="toggle-row">
+                <div class="toggle-info">
+                    <h4>Симуляция "Печатает..."</h4>
+                    <p>Показывать статус typing перед отправкой</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="typingToggle" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="toggle-row">
+                <div class="toggle-info">
+                    <h4>Дробление сообщений</h4>
+                    <p>Отправлять 1-3 коротких фразы вместо простыни</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="splitToggle" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="toggle-row">
+                <div class="toggle-info">
+                    <h4>Фильтр безопасности</h4>
+                    <p>Тревога при словах: деньги, пароль, полиция</p>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" id="sensitiveToggle" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="form-group" style="margin-top: 14px;">
+                <label>Задержка ответа человека (секунды: мин - макс):</label>
+                <div style="display: flex; gap: 8px;">
+                    <input type="number" id="minDelayInput" value="3" min="1" max="60" style="width: 50%;">
+                    <input type="number" id="maxDelayInput" value="8" min="2" max="120" style="width: 50%;">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Human Takeover (пауза если друг сам написал, мин):</label>
+                <input type="number" id="takeoverInput" value="15" min="1" max="180">
+            </div>
+
+            <button class="btn-primary" onclick="saveSettings()">💾 Сохранить поведение</button>
+        </div>
+    </div>
+
+    <!-- TAB 3: CHATS WHITELIST -->
+    <div id="tab-chats" class="tab-content">
+        <div class="card">
+            <div class="card-title">💬 Управление чатами переписки</div>
+            <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">
+                Включай или отключай автоответ бота для каждого диалога по отдельности.
+            </p>
+            <input type="text" id="chatSearch" placeholder="🔍 Поиск по названию..." oninput="filterChats()" style="margin-bottom: 12px;">
+            <div id="chatsListContainer" style="display: flex; flex-direction: column; gap: 8px;">
+                <!-- Chats list will be rendered here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB 4: PERSONA & SIMULATOR -->
+    <div id="tab-persona" class="tab-content">
+        <div class="card">
+            <div class="card-title">🎯 Симулятор переписки с Андреем</div>
+            <div class="chat-sim" id="chatSimBox">
+                <div class="msg-bubble msg-bot">че надо го в бравл</div>
+            </div>
+            <div style="display: flex; gap: 6px;">
+                <input type="text" id="simInput" placeholder="Напиши что-то Андрею..." onkeydown="if(event.key==='Enter') sendSimMessage()">
+                <button class="btn-primary" style="width: auto; margin-top: 0; padding: 0 16px;" onclick="sendSimMessage()">➤</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">📝 Системный промпт характера</div>
+            <div class="form-group">
+                <label>Дополнительные правила или фразочки Андрея:</label>
+                <textarea id="customPromptInput" rows="5" placeholder="Оставьте пустым для базового профиля (Brawl Stars, Standoff, 11 лет)..."></textarea>
+            </div>
+            <button class="btn-primary" onclick="saveSettings()">💾 Обновить характер</button>
+        </div>
+    </div>
+
+    <!-- TAB 5: STATS -->
+    <div id="tab-stats" class="tab-content">
+        <div class="card">
+            <div class="card-title">📊 Оперативные показатели</div>
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <div class="stat-val" id="statSent">0</div>
+                    <div class="stat-lbl">ОТПРАВЛЕНО СООБЩЕНИЙ</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="statReceived">0</div>
+                    <div class="stat-lbl">ПРИНЯТО СООБЩЕНИЙ</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="statChats">0</div>
+                    <div class="stat-lbl">ВСЕГО ЧАТОВ</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="statActiveChats">0</div>
+                    <div class="stat-lbl">АКТИВНЫХ ЧАТОВ</div>
+                </div>
+            </div>
+            <div style="margin-top: 14px; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+                • Master Admin ID: <code>7150170715</code><br>
+                • Режим: Telegram Business Webhooks<br>
+                • Анализ: База из 16,492 сообщений и досье
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toastBox">Настройки сохранены!</div>
+
+    <script>
+        // Init Telegram WebApp
+        if (window.Telegram && window.Telegram.WebApp) {
+            window.Telegram.WebApp.ready();
+            window.Telegram.WebApp.expand();
+        }
+
+        let allChats = [];
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+
+            if (tabId === 'tab-chats') loadChats();
+            if (tabId === 'tab-stats') loadStats();
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toastBox');
+            t.innerText = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        async function loadSettings() {
+            try {
+                const res = await fetch('/api/settings');
+                const data = await res.json();
+                const s = data.settings;
+                
+                // Populate models
+                const sel = document.getElementById('activeModelSelect');
+                sel.innerHTML = '';
+                data.models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.innerText = `${m.name}`;
+                    if (m.id === s.active_model) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+
+                // Set values
+                document.getElementById('tempInput').value = s.temperature || '0.75';
+                document.getElementById('tempValue').innerText = s.temperature || '0.75';
+                document.getElementById('minDelayInput').value = s.min_delay || '3';
+                document.getElementById('maxDelayInput').value = s.max_delay || '8';
+                document.getElementById('takeoverInput').value = s.human_takeover_minutes || '15';
+
+                document.getElementById('pauseToggle').checked = s.is_paused === '1';
+                document.getElementById('typingToggle').checked = s.simulate_typing === '1';
+                document.getElementById('splitToggle').checked = s.split_messages === '1';
+                document.getElementById('sensitiveToggle').checked = s.filter_sensitive === '1';
+                document.getElementById('customPromptInput').value = s.custom_prompt || '';
+                document.getElementById('customBaseUrl').value = s.custom_base_url || '';
+                document.getElementById('customModelName').value = s.custom_model_name || '';
+                if (s.custom_api_key_masked) {
+                    document.getElementById('customApiKey').placeholder = `Активен (${s.custom_api_key_masked})`;
+                }
+
+                // API Key placeholders
+                ['gemini', 'openai', 'deepseek', 'anthropic', 'groq', 'openrouter'].forEach(prov => {
+                    const el = document.getElementById(`key_${prov}`);
+                    if (s[`${prov}_api_key_masked`]) {
+                        el.placeholder = `Активен (${s[`${prov}_api_key_masked`]})`;
+                    }
+                });
+
+                updateStatusBadge(s.is_paused === '1');
+            } catch (e) {
+                console.error("Error loading settings:", e);
+            }
+        }
+
+        function updateStatusBadge(isPaused) {
+            const badge = document.getElementById('statusBadge');
+            if (isPaused) {
+                badge.className = 'status-badge paused';
+                badge.innerText = 'НА ПАУЗЕ';
+            } else {
+                badge.className = 'status-badge';
+                badge.innerText = 'АКТИВЕН';
+            }
+        }
+
+        async function saveSettings() {
+            const payload = {
+                active_model: document.getElementById('activeModelSelect').value,
+                temperature: document.getElementById('tempInput').value,
+                min_delay: document.getElementById('minDelayInput').value,
+                max_delay: document.getElementById('maxDelayInput').value,
+                human_takeover_minutes: document.getElementById('takeoverInput').value,
+                is_paused: document.getElementById('pauseToggle').checked ? '1' : '0',
+                simulate_typing: document.getElementById('typingToggle').checked ? '1' : '0',
+                split_messages: document.getElementById('splitToggle').checked ? '1' : '0',
+                filter_sensitive: document.getElementById('sensitiveToggle').checked ? '1' : '0',
+                custom_prompt: document.getElementById('customPromptInput').value
+            };
+
+            // Add keys only if user typed new one
+            ['gemini', 'openai', 'deepseek', 'anthropic', 'groq', 'openrouter'].forEach(prov => {
+                const val = document.getElementById(`key_${prov}`).value.trim();
+                if (val && !val.includes('****')) {
+                    payload[`${prov}_api_key`] = val;
+                }
+            });
+
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                showToast(data.message || 'Настройки сохранены!');
+                updateStatusBadge(payload.is_paused === '1');
+            } catch (e) {
+                alert("Ошибка сохранения: " + e);
+            }
+        }
+
+        async function saveCustomSettings() {
+            const bUrl = document.getElementById('customBaseUrl').value.trim();
+            const mName = document.getElementById('customModelName').value.trim();
+            const cKey = document.getElementById('customApiKey').value.trim();
+
+            const payload = {
+                active_model: 'custom-model',
+                active_provider: 'custom',
+                custom_base_url: bUrl,
+                custom_model_name: mName
+            };
+            if (cKey && !cKey.includes('****')) {
+                payload.custom_api_key = cKey;
+            }
+
+            try {
+                const res = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                showToast('Кастомный провайдер сохранен и активирован!');
+                document.getElementById('activeModelSelect').value = 'custom-model';
+            } catch (e) {
+                alert("Ошибка сохранения: " + e);
+            }
+        }
+
+        async function loadChats() {
+            try {
+                const res = await fetch('/api/chats');
+                const data = await res.json();
+                allChats = data.chats || [];
+                renderChats(allChats);
+            } catch (e) {
+                console.error("Error loading chats:", e);
+            }
+        }
+
+        function renderChats(chats) {
+            const container = document.getElementById('chatsListContainer');
+            if (chats.length === 0) {
+                container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">Пока нет диалогов. Когда другу напишут в Telegram, чат появится здесь.</div>';
+                return;
+            }
+            container.innerHTML = '';
+            chats.forEach(c => {
+                const row = document.createElement('div');
+                row.className = 'toggle-row';
+                row.innerHTML = `
+                    <div class="toggle-info">
+                        <h4>${c.chat_title || 'Личный чат'}</h4>
+                        <p>${c.username ? '@' + c.username : 'ID: ' + c.chat_id}</p>
+                    </div>
+                    <label class="switch">
+                        <input type="checkbox" ${c.is_enabled ? 'checked' : ''} onchange="toggleChat(${c.chat_id}, this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                `;
+                container.appendChild(row);
+            });
+        }
+
+        function filterChats() {
+            const q = document.getElementById('chatSearch').value.toLowerCase();
+            const filtered = allChats.filter(c => 
+                (c.chat_title && c.chat_title.toLowerCase().includes(q)) || 
+                (c.username && c.username.toLowerCase().includes(q))
+            );
+            renderChats(filtered);
+        }
+
+        async function toggleChat(chatId, isEnabled) {
+            try {
+                await fetch('/api/chats/toggle', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({chat_id: chatId, is_enabled: isEnabled})
+                });
+                showToast(isEnabled ? 'Чат активирован' : 'Чат заглушен');
+            } catch (e) {
+                alert("Ошибка: " + e);
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                document.getElementById('statSent').innerText = data.stats.total_sent;
+                document.getElementById('statReceived').innerText = data.stats.total_received;
+                document.getElementById('statChats').innerText = data.stats.total_chats;
+                document.getElementById('statActiveChats').innerText = data.stats.active_chats;
+            } catch (e) {
+                console.error("Error loading stats:", e);
+            }
+        }
+
+        async function sendSimMessage() {
+            const inp = document.getElementById('simInput');
+            const txt = inp.value.trim();
+            if (!txt) return;
+
+            const box = document.getElementById('chatSimBox');
+            
+            // Add user bubble
+            const uBubble = document.createElement('div');
+            uBubble.className = 'msg-bubble msg-user';
+            uBubble.innerText = txt;
+            box.appendChild(uBubble);
+            inp.value = '';
+
+            // Typing indicator
+            const typing = document.createElement('div');
+            typing.className = 'typing-indicator';
+            typing.innerText = 'Андрей печатает...';
+            box.appendChild(typing);
+            box.scrollTop = box.scrollHeight;
+
+            try {
+                const res = await fetch('/api/test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message: txt})
+                });
+                const data = await res.json();
+                typing.remove();
+
+                if (data.chunks && data.chunks.length > 0) {
+                    data.chunks.forEach((chunk, idx) => {
+                        setTimeout(() => {
+                            const bBubble = document.createElement('div');
+                            bBubble.className = 'msg-bubble msg-bot';
+                            bBubble.innerText = chunk;
+                            box.appendChild(bBubble);
+                            box.scrollTop = box.scrollHeight;
+                        }, idx * 600);
+                    });
+                } else {
+                    const bBubble = document.createElement('div');
+                    bBubble.className = 'msg-bubble msg-bot';
+                    bBubble.innerText = data.raw || 'пон';
+                    box.appendChild(bBubble);
+                }
+            } catch (e) {
+                typing.remove();
+                const errBubble = document.createElement('div');
+                errBubble.className = 'msg-bubble msg-bot';
+                errBubble.innerText = 'Ошибка: проверьте API ключ в первой вкладке';
+                box.appendChild(errBubble);
+            }
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function onModelChange() {
+            saveSettings();
+        }
+
+        // Initial load
+        loadSettings();
+    </script>
+</body>
+</html>
