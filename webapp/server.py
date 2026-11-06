@@ -16,9 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from bot.webhook import WEBHOOK_PATH, TelegramWebhook
-from config import ADMIN_ID, API_KEY_FIELDS, BOT_TOKEN, LOCAL_ADMIN_TOKEN, SUPPORTED_MODELS, TELEGRAM_WEBHOOK_BASE_URL
+from config import ADMIN_ID, BOT_TOKEN, LOCAL_ADMIN_TOKEN, TELEGRAM_WEBHOOK_BASE_URL
 from core.llm_client import ReplyError, llm_manager
-from core.settings import NUMERIC_LIMITS, TOGGLES, provider_key
+from core.settings import NUMERIC_LIMITS, TOGGLES
 from database.db import db
 
 logger = logging.getLogger(__name__)
@@ -94,14 +94,6 @@ SettingValue = Annotated[str, StringConstraints(max_length=4096)]
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    active_model: SettingValue = None
-    active_provider: SettingValue = None
-    openai_api_key: SettingValue = None
-    gemini_api_key: SettingValue = None
-    anthropic_api_key: SettingValue = None
-    deepseek_api_key: SettingValue = None
-    groq_api_key: SettingValue = None
-    openrouter_api_key: SettingValue = None
     custom_base_url: SettingValue = None
     custom_model_name: SettingValue = None
     custom_api_key: SettingValue = None
@@ -179,15 +171,12 @@ async def telegram_update(request: Request):
 async def get_settings():
     settings = await db.get_all_settings()
     public_fields = {
-        *NUMERIC_LIMITS, *TOGGLES, "active_model", "active_provider",
+        *NUMERIC_LIMITS, *TOGGLES,
         "custom_prompt", "custom_base_url", "custom_model_name",
     }
     public = {key: settings[key] for key in public_fields}
-    for key in API_KEY_FIELDS:
-        exists = bool(provider_key(settings, key.removesuffix("_api_key")))
-        public[f"has_{key}"] = exists
-        public[f"{key}_masked"] = "********" if exists else ""
-    return {"settings": public, "models": SUPPORTED_MODELS}
+    public["has_custom_api_key"] = bool(settings["custom_api_key"])
+    return {"settings": public}
 
 
 @api.post("/settings")
@@ -216,7 +205,7 @@ async def get_stats():
     settings = await db.get_all_settings()
     return {
         "stats": await db.get_stats(),
-        "active_model": settings["active_model"],
+        "active_model": settings["custom_model_name"] or None,
         "is_paused": settings["is_paused"] == "1",
     }
 

@@ -340,7 +340,6 @@ details.panel > form { border-top: 1px solid var(--line); margin-top: 14px; padd
     .overview { padding: 30px; }
     .overview-graphic { width: 35%; right: 28px; top: 20px; }
     .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
-    .keys-panel { grid-column: 1 / -1; }
     .panel { padding: 20px; }
     .stats-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     .stats-grid > div:nth-child(n) { border-right: 1px solid var(--line); }

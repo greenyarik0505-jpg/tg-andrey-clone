@@ -14,14 +14,6 @@ let chatsLoading = false;
 let statsLoading = false;
 const pendingChats = new Set();
 const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
-const providerNames = {
-    gemini: "Google Gemini",
-    openai: "OpenAI",
-    deepseek: "DeepSeek",
-    anthropic: "Anthropic",
-    groq: "Groq",
-    openrouter: "OpenRouter",
-};
 
 telegram?.ready();
 telegram?.expand();
@@ -107,50 +99,27 @@ function clearSensitiveFields() {
     get("previewMessage").value = "";
 }
 
-function buildProviderFields() {
-    const fields = get("providerKeys");
-    for (const [provider, name] of Object.entries(providerNames)) {
-        const row = document.createElement("div");
-        row.className = "field";
-        const label = document.createElement("label");
-        label.htmlFor = "key-" + provider;
-        label.textContent = name + " ";
-        const indicator = document.createElement("span");
-        indicator.id = "key-status-" + provider;
-        indicator.className = "key-indicator";
-        label.append(indicator);
-        const input = document.createElement("input");
-        input.id = label.htmlFor;
-        input.type = "password";
-        input.maxLength = 2048;
-        input.autocomplete = "off";
-        input.spellcheck = false;
-        input.placeholder = "Новый ключ";
-        row.append(label, input);
-        fields.append(row);
-    }
-}
-
-function setKeyStatus(id, present) {
-    const indicator = get(id);
+function renderKeyStatus() {
+    const indicator = get("customKeyStatus");
+    const present = settings.has_custom_api_key ?? null;
     indicator.dataset.present = String(present);
     indicator.textContent = present === null ? "Статус неизвестен" : present ? "Настроен" : "Не задан";
 }
 
-function renderKeyStatus() {
-    for (const provider of Object.keys(providerNames)) {
-        setKeyStatus("key-status-" + provider, Boolean(settings["has_" + provider + "_api_key"]));
-    }
-    setKeyStatus("customKeyStatus", settings.has_custom_api_key ?? null);
-}
-
 function renderPause() {
     const paused = settings.is_paused === "1";
-    get("overviewTitle").closest(".overview").dataset.state = paused ? "paused" : "active";
-    get("replyStatus").textContent = paused ? "На паузе" : "Разрешены";
-    get("replySummary").textContent = paused
-        ? "Бот не отвечает, пока действует глобальная пауза."
-        : "Бот может отвечать в разрешённых чатах Telegram Business. Автоматические реплики помечены как ответы ИИ.";
+    const hasProvider = Boolean(settings.custom_base_url && settings.custom_model_name);
+    get("overviewTitle").closest(".overview").dataset.state = paused || !hasProvider ? "paused" : "active";
+    if (paused) {
+        get("replyStatus").textContent = "На паузе";
+        get("replySummary").textContent = "Бот не отвечает, пока действует глобальная пауза.";
+    } else if (!hasProvider) {
+        get("replyStatus").textContent = "Нужен провайдер";
+        get("replySummary").textContent = "Укажите Base URL и ID модели, чтобы бот мог отвечать.";
+    } else {
+        get("replyStatus").textContent = "Разрешены";
+        get("replySummary").textContent = "Бот может отвечать в разрешённых чатах Telegram. Автоответы помечены как ответы ИИ.";
+    }
     const button = get("pauseButton");
     button.textContent = paused ? "Возобновить автоответы" : "Поставить на паузу";
     button.disabled = settingsSaving;
@@ -165,15 +134,6 @@ function updateTemperature() {
 
 function fillSettings(data) {
     settings = data.settings;
-    const select = get("activeModel");
-    select.replaceChildren();
-    for (const model of data.models) {
-        select.add(new Option(model.name, model.id));
-    }
-    if (settings.active_model && !data.models.some((model) => model.id === settings.active_model)) {
-        select.add(new Option(settings.active_model, settings.active_model));
-    }
-    select.value = settings.active_model;
     get("temperature").value = settings.temperature;
     updateTemperature();
     get("customBaseUrl").value = settings.custom_base_url || "";
@@ -287,42 +247,12 @@ get("pauseButton").addEventListener("click", async (event) => {
     await save({ is_paused: pause }, event.currentTarget, "pauseFeedback");
     pauseRevision += 1;
 });
-get("modelForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const activeModel = get("activeModel").value;
-    if (activeModel === "custom-model" && !settings.custom_model_name) {
-        feedback("modelFeedback", "Сначала сохраните параметры своего провайдера.", true);
-        return;
-    }
-    const payload = { temperature: get("temperature").value };
-    if (activeModel !== settings.active_model) payload.active_model = activeModel;
-    save(payload, event.submitter || event.currentTarget.querySelector('button[type="submit"]'), "modelFeedback");
-});
-get("keysForm").addEventListener("submit", (event) => {
-    event.preventDefault();
-    const payload = {};
-    for (const provider of Object.keys(providerNames)) {
-        const value = get("key-" + provider).value.trim();
-        if (value && !value.includes("****")) payload[provider + "_api_key"] = value;
-    }
-    if (!Object.keys(payload).length) {
-        feedback("keysFeedback", "Введите новый ключ.", true);
-        return;
-    }
-    save(payload, event.submitter || event.currentTarget.querySelector('button[type="submit"]'), "keysFeedback", () => {
-        for (const provider of Object.keys(providerNames)) {
-            const input = get("key-" + provider);
-            if (payload[provider + "_api_key"] === input.value.trim()) input.value = "";
-        }
-        renderKeyStatus();
-    });
-});
 get("customForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const payload = {
-        active_model: "custom-model",
         custom_base_url: get("customBaseUrl").value.trim(),
         custom_model_name: get("customModelName").value.trim(),
+        temperature: get("temperature").value,
     };
     const key = get("customApiKey");
     const keyValue = key.value.trim();
@@ -333,7 +263,6 @@ get("customForm").addEventListener("submit", (event) => {
     if (keyValue) payload.custom_api_key = keyValue;
     save(payload, event.submitter || event.currentTarget.querySelector('button[type="submit"]'), "customFeedback", async () => {
         if (payload.custom_api_key === key.value.trim()) key.value = "";
-        get("activeModel").value = payload.active_model;
         try {
             const data = await request("/api/settings");
             settings.has_custom_api_key = data.settings.has_custom_api_key;
@@ -518,5 +447,4 @@ get("previewForm").addEventListener("submit", async (event) => {
     }
 });
 
-buildProviderFields();
 connect();
