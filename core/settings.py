@@ -1,10 +1,9 @@
 """Validation and normalization shared by Telegram and the Mini App."""
 import math
-import os
 
 import httpx
 
-from config import API_KEY_FIELDS, CUSTOM_PROVIDER_ORIGINS, MODEL_PROVIDERS
+from config import CUSTOM_PROVIDER_ORIGINS
 
 NUMERIC_LIMITS = {
     "temperature": (0, 1, 0.75),
@@ -27,13 +26,6 @@ def number(settings, name):
 def reply_delays(settings):
     minimum = number(settings, "min_delay")
     return minimum, max(minimum, number(settings, "max_delay"))
-
-
-def provider_key(settings, provider):
-    name = f"{provider}_api_key"
-    if provider == "custom":
-        return settings.get(name, "")
-    return settings.get(name) or os.getenv(name.upper(), "").strip()
 
 
 def custom_endpoint(value):
@@ -73,7 +65,7 @@ def validate_settings(data, current):
         elif key in TOGGLES:
             if value not in {"0", "1"}:
                 raise ValueError("Значение переключателя должно быть 0 или 1.")
-        elif key in API_KEY_FIELDS:
+        elif key == "custom_api_key":
             if "****" in value:
                 raise ValueError("Введите ключ целиком вместо маски.")
             if len(value) > 2048 or (value and (not value.isascii() or not value.isprintable() or any(c.isspace() for c in value))):
@@ -81,20 +73,12 @@ def validate_settings(data, current):
         elif key == "custom_base_url":
             if value:
                 custom_endpoint(value)
-        elif key in {"custom_prompt", "custom_model_name", "active_model"}:
+        elif key in {"custom_prompt", "custom_model_name"}:
             if len(value) > (4000 if key == "custom_prompt" else 256):
                 raise ValueError("Значение настройки слишком длинное.")
-        elif key == "active_provider":
-            continue  # The model determines the provider.
         else:
             raise ValueError("Неизвестная настройка.")
         changes[key] = value
-
-    if "active_model" in changes:
-        provider = MODEL_PROVIDERS.get(changes["active_model"])
-        if not provider:
-            raise ValueError("Неизвестная модель.")
-        changes["active_provider"] = provider
 
     if "custom_base_url" in changes and "custom_api_key" not in changes:
         old_url = current.get("custom_base_url", "")
@@ -113,10 +97,9 @@ def validate_settings(data, current):
     if {"min_delay", "max_delay"} & changes.keys():
         if number(merged, "min_delay") > number(merged, "max_delay"):
             raise ValueError("Минимальная задержка не может превышать максимальную.")
-    if {"active_model", "custom_base_url", "custom_model_name"} & changes.keys():
-        if merged.get("active_provider") == "custom":
-            if not merged.get("custom_base_url") or not merged.get("custom_model_name"):
-                raise ValueError("Укажите адрес и название кастомной модели.")
-            custom_endpoint(merged["custom_base_url"])
+    if {"custom_base_url", "custom_model_name"} & changes.keys():
+        if not merged.get("custom_base_url") or not merged.get("custom_model_name"):
+            raise ValueError("Укажите Base URL и ID модели.")
+        custom_endpoint(merged["custom_base_url"])
 
     return changes

@@ -7,7 +7,7 @@
     <title>Пульт бота · Telegram Business</title>
     <link rel="stylesheet" href="/static/panel.css">
     <script src="https://telegram.org/js/telegram-web-app.js?62" defer></script>
-    <script src="/static/panel.js" defer></script>
+    <script src="/static/panel.js?v=2" defer></script>
 </head>
 <body>
     <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -80,25 +80,8 @@
                 </nav>
 
                 <section class="tab-panel" id="model" role="tabpanel" aria-labelledby="tab-model" tabindex="0">
-                    <div class="section-heading"><span class="section-number">01</span><h2>Модель и провайдеры</h2></div>
-                    <div class="settings-grid">
-                        <form class="panel" id="modelForm">
-                            <h3>Модель ответов</h3>
-                            <div class="field">
-                                <label for="activeModel">Активная модель</label>
-                                <select id="activeModel" required></select>
-                            </div>
-                            <div class="field">
-                                <div class="label-row"><label for="temperature">Температура</label><output id="temperatureValue" for="temperature">0,75</output></div>
-                                <input id="temperature" type="range" min="0" max="1" step="0.05" value="0.75">
-                                <div class="range-labels" aria-hidden="true"><span>Сдержанно</span><span>Свободно</span></div>
-                            </div>
-                            <button class="button button-primary" type="submit">Применить модель</button>
-                            <p class="feedback" id="modelFeedback" role="status" hidden></p>
-                        </form>
-
-                        <form class="panel" id="customForm">
-                            <h3>Свой провайдер</h3>
+                    <div class="section-heading"><span class="section-number">01</span><h2>Свой провайдер</h2></div>
+                    <form class="panel" id="customForm">
                             <p class="muted">Подключение через OpenAI совместимый API. Для других доменов добавьте адрес в <code>CUSTOM_PROVIDER_ORIGINS</code> на сервере.</p>
                             <div class="field">
                                 <label for="customBaseUrl">Base URL</label>
@@ -112,20 +95,14 @@
                                 <label for="customApiKey">Ключ <span class="key-indicator" id="customKeyStatus"></span></label>
                                 <input id="customApiKey" type="password" placeholder="Если нужен для API" maxlength="2048" autocomplete="off" spellcheck="false">
                             </div>
-                            <button class="button" type="submit">Сохранить и выбрать</button>
+                            <div class="field">
+                                <div class="label-row"><label for="temperature">Температура</label><output id="temperatureValue" for="temperature">0,75</output></div>
+                                <input id="temperature" type="range" min="0" max="1" step="0.05" value="0.75">
+                                <div class="range-labels" aria-hidden="true"><span>Сдержанно</span><span>Свободно</span></div>
+                            </div>
+                            <button class="button button-primary" type="submit">Сохранить провайдера</button>
                             <p class="feedback" id="customFeedback" role="status" hidden></p>
-                        </form>
-
-                        <details class="panel keys-panel">
-                            <summary><span><strong>Ключи провайдеров</strong><small>Gemini, OpenAI, DeepSeek, Anthropic, Groq, OpenRouter</small></span><span class="summary-mark" aria-hidden="true"></span></summary>
-                            <form id="keysForm">
-                                <p class="muted">Введите только те ключи, которые хотите обновить.</p>
-                                <div class="field-grid" id="providerKeys"></div>
-                                <button class="button" type="submit">Сохранить ключи</button>
-                                <p class="feedback" id="keysFeedback" role="status" hidden></p>
-                            </form>
-                        </details>
-                    </div>
+                    </form>
                 </section>
 
                 <section class="tab-panel" id="behavior" role="tabpanel" aria-labelledby="tab-behavior" tabindex="0" hidden>

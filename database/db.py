@@ -7,7 +7,7 @@ from typing import Dict, Any, List
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from config import BUSINESS_USER_ID, DB_PATH, DEFAULT_MODEL, LEGACY_MODELS, MODEL_PROVIDERS, SETTINGS_ENCRYPTION_KEY
+from config import BUSINESS_USER_ID, DB_PATH, SETTINGS_ENCRYPTION_KEY
 from core.settings import NUMERIC_LIMITS, TOGGLES, number, reply_delays, validate_settings
 
 ENCRYPTED_PREFIX = "fernet:"
@@ -56,14 +56,6 @@ CREATE TABLE IF NOT EXISTS business_requests (
 """
 
 DEFAULT_SETTINGS = {
-    "active_model": DEFAULT_MODEL,
-    "active_provider": "gemini",
-    "openai_api_key": "",
-    "gemini_api_key": "",
-    "anthropic_api_key": "",
-    "deepseek_api_key": "",
-    "groq_api_key": "",
-    "openrouter_api_key": "",
     "custom_base_url": "",
     "custom_model_name": "",
     "custom_api_key": "",
@@ -150,10 +142,6 @@ class Database:
             )
             await db.execute("CREATE INDEX IF NOT EXISTS history_chat ON message_history(chat_id, id)")
             await db.executemany("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", DEFAULT_SETTINGS.items())
-            model = rows.get("active_model", DEFAULT_MODEL)
-            model = LEGACY_MODELS.get(model, model)
-            if model not in MODEL_PROVIDERS:
-                model = DEFAULT_MODEL
             normalized = {key: str(number(rows, key)) for key in NUMERIC_LIMITS}
             normalized["max_delay"] = str(reply_delays(rows)[1])
             if not rows.get("reply_delay_v2") and (normalized["min_delay"], normalized["max_delay"]) == ("3.0", "8.0"):
@@ -167,8 +155,6 @@ class Database:
                 "business_owner_id": owner or "",
                 "business_owner_verified": "1" if verified else "0",
                 "reply_delay_v2": "1",
-                "active_model": model,
-                "active_provider": MODEL_PROVIDERS[model],
             })
             await db.commit()
             if migrated:
@@ -186,7 +172,10 @@ class Database:
 
     async def _read_settings(self, connection):
         rows = await connection.execute_fetchall("SELECT key, value FROM settings")
-        return {**DEFAULT_SETTINGS, **{key: self._decode(key, value) for key, value in rows if value is not None}}
+        return {**DEFAULT_SETTINGS, **{
+            key: self._decode(key, value)
+            for key, value in rows if key in DEFAULT_SETTINGS and value is not None
+        }}
 
     async def _write_settings(self, connection, settings):
         await connection.executemany(
