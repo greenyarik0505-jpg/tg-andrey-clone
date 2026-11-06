@@ -1,149 +1,234 @@
-"""FastAPI backend for Telegram Mini App."""
-import os
-from typing import Dict, Any, Optional
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, FileResponse
+"""Serve the Mini App and protect administrative endpoints."""
+import hmac
+import json
+import logging
+import time
+from contextlib import asynccontextmanager
+from hashlib import sha256
+from pathlib import Path
+from typing import Annotated
+from urllib.parse import parse_qsl
+
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+from bot.webhook import WEBHOOK_PATH, TelegramWebhook
+from config import ADMIN_ID, API_KEY_FIELDS, BOT_TOKEN, LOCAL_ADMIN_TOKEN, SUPPORTED_MODELS, TELEGRAM_WEBHOOK_BASE_URL
+from core.llm_client import ReplyError, llm_manager
+from core.settings import NUMERIC_LIMITS, TOGGLES, provider_key
 from database.db import db
-from config import SUPPORTED_MODELS, ADMIN_ID
-from core.persona import post_process_reply
-from core.llm_client import llm_manager
 
-app = FastAPI(title="Andrey AI Clone Dashboard")
+logger = logging.getLogger(__name__)
+STATIC_DIR = Path(__file__).parent / "static"
+LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+INIT_DATA_MAX_AGE = 3600
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-if not os.path.exists(STATIC_DIR):
-    os.makedirs(STATIC_DIR, exist_ok=True)
+@asynccontextmanager
+async def lifespan(app):
+    if db.cipher is None:
+        await db.init()
+    webhook = TelegramWebhook(BOT_TOKEN) if BOT_TOKEN and TELEGRAM_WEBHOOK_BASE_URL else None
+    app.state.telegram_webhook = webhook
+    try:
+        if webhook:
+            await webhook.start(TELEGRAM_WEBHOOK_BASE_URL)
+        yield
+    finally:
+        if webhook:
+            await webhook.close()
+        if not getattr(app.state, "unified_runner", False):
+            await llm_manager.close()
+
+
+app = FastAPI(title="Telegram Business Dashboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def verify_init_data(raw):
+    if not BOT_TOKEN or len(raw) > 8192:
+        return None
+    try:
+        pairs = parse_qsl(raw, strict_parsing=True, max_num_fields=32, errors="strict")
+        fields = dict(pairs)
+        if len(fields) != len(pairs):
+            return None
+        signature = bytes.fromhex(fields.pop("hash"))
+        payload = "\n".join(f"{key}={value}" for key, value in sorted(fields.items()))
+        secret = hmac.digest(b"WebAppData", BOT_TOKEN.encode(), sha256)
+        if not hmac.compare_digest(signature, hmac.digest(secret, payload.encode(), sha256)):
+            return None
+        age = time.time() - int(fields["auth_date"])
+        user_id = json.loads(fields["user"])["id"]
+        if -30 <= age <= INIT_DATA_MAX_AGE and type(user_id) is int:
+            return user_id
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return None
+
+
+async def require_admin(request: Request):
+    scheme, _, value = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() == "tma":
+        user_id = verify_init_data(value)
+        if user_id == ADMIN_ID:
+            return
+        if user_id is not None:
+            raise HTTPException(403, "Доступ разрешён только администратору.")
+    elif scheme.lower() == "bearer" and len(LOCAL_ADMIN_TOKEN) >= 24:
+        if (
+            request.client and request.client.host in LOOPBACK
+            and request.url.hostname in LOOPBACK
+            and hmac.compare_digest(value.encode(), LOCAL_ADMIN_TOKEN.encode())
+        ):
+            return
+    raise HTTPException(401, "Откройте Mini App через Telegram или войдите с локальным ключом.")
+
+
+api = APIRouter(prefix="/api", dependencies=[Depends(require_admin)])
+SettingValue = Annotated[str, StringConstraints(max_length=4096)]
+
 
 class SettingsUpdate(BaseModel):
-    active_model: Optional[str] = None
-    active_provider: Optional[str] = None
-    openai_api_key: Optional[str] = None
-    gemini_api_key: Optional[str] = None
-    anthropic_api_key: Optional[str] = None
-    deepseek_api_key: Optional[str] = None
-    groq_api_key: Optional[str] = None
-    openrouter_api_key: Optional[str] = None
-    custom_base_url: Optional[str] = None
-    custom_model_name: Optional[str] = None
-    custom_api_key: Optional[str] = None
-    temperature: Optional[str] = None
-    min_delay: Optional[str] = None
-    max_delay: Optional[str] = None
-    simulate_typing: Optional[str] = None
-    split_messages: Optional[str] = None
-    human_takeover_minutes: Optional[str] = None
-    is_paused: Optional[str] = None
-    filter_sensitive: Optional[str] = None
-    custom_prompt: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
+
+    active_model: SettingValue = None
+    active_provider: SettingValue = None
+    openai_api_key: SettingValue = None
+    gemini_api_key: SettingValue = None
+    anthropic_api_key: SettingValue = None
+    deepseek_api_key: SettingValue = None
+    groq_api_key: SettingValue = None
+    openrouter_api_key: SettingValue = None
+    custom_base_url: SettingValue = None
+    custom_model_name: SettingValue = None
+    custom_api_key: SettingValue = None
+    temperature: SettingValue = None
+    min_delay: SettingValue = None
+    max_delay: SettingValue = None
+    simulate_typing: SettingValue = None
+    split_messages: SettingValue = None
+    human_takeover_minutes: SettingValue = None
+    is_paused: SettingValue = None
+    custom_prompt: SettingValue = None
+
 
 class ChatToggle(BaseModel):
-    chat_id: int
-    is_enabled: bool
+    model_config = ConfigDict(extra="forbid")
+
+    chat_id: int = Field(strict=True, gt=0, lt=2**52)
+    is_enabled: bool = Field(strict=True)
+
 
 class TestMessage(BaseModel):
-    message: str
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4096)]
 
-def mask_key(k: str) -> str:
-    if not k:
-        return ""
-    if len(k) <= 8:
-        return "********"
-    return k[:4] + "****" + k[-4:]
+
+@app.exception_handler(RequestValidationError)
+async def bad_payload(request, exc):
+    # Validation details may include secrets copied from the submitted body.
+    return JSONResponse({"detail": "Проверьте формат и длину полей."}, status_code=422)
+
+
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self' https://telegram.org; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+        "object-src 'none'; base-uri 'none'; form-action 'none'"
+    )
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
 
 @app.get("/")
 async def get_index():
-    index_file = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(index_file):
-        return FileResponse(index_file)
-    return HTMLResponse("<h1>Mini App Static File Not Found</h1>")
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
-@app.get("/api/settings")
+
+@app.get("/healthz")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post(WEBHOOK_PATH)
+async def telegram_update(request: Request):
+    webhook = request.app.state.telegram_webhook
+    if webhook is None:
+        raise HTTPException(404)
+    if not webhook.matches(request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")):
+        raise HTTPException(403)
+    try:
+        update = await request.json()
+    except (ValueError, UnicodeError):
+        raise HTTPException(400) from None
+    if not isinstance(update, dict) or type(update.get("update_id")) is not int:
+        raise HTTPException(400)
+    if not webhook.enqueue(update):
+        raise HTTPException(503)
+    return {"ok": True}
+
+
+@api.get("/settings")
 async def get_settings():
     settings = await db.get_all_settings()
-    # Mask secret keys for safe UI inspection unless user explicitly replaces
-    masked = dict(settings)
-    for key in ["openai_api_key", "gemini_api_key", "anthropic_api_key", "deepseek_api_key", "groq_api_key", "openrouter_api_key", "custom_api_key"]:
-        raw = masked.get(key, "")
-        masked[f"{key}_masked"] = mask_key(raw)
-        masked[f"has_{key}"] = bool(raw)
-    
-    return {
-        "settings": masked,
-        "models": SUPPORTED_MODELS
+    public_fields = {
+        *NUMERIC_LIMITS, *TOGGLES, "active_model", "active_provider",
+        "custom_prompt", "custom_base_url", "custom_model_name",
     }
+    public = {key: settings[key] for key in public_fields}
+    for key in API_KEY_FIELDS:
+        exists = bool(provider_key(settings, key.removesuffix("_api_key")))
+        public[f"has_{key}"] = exists
+        public[f"{key}_masked"] = "********" if exists else ""
+    return {"settings": public, "models": SUPPORTED_MODELS}
 
-@app.post("/api/settings")
+
+@api.post("/settings")
 async def update_settings(payload: SettingsUpdate):
-    data = payload.model_dump(exclude_unset=True)
-    # Don't overwrite api keys if passed masked or empty
-    for k in list(data.keys()):
-        if k.endswith("_api_key") and (not data[k] or "****" in data[k]):
-            del data[k]
-    
-    # If active_model changed, automatically set active_provider
-    if "active_model" in data:
-        model_id = data["active_model"]
-        match = next((m for m in SUPPORTED_MODELS if m["id"] == model_id), None)
-        if match:
-            data["active_provider"] = match["provider"]
+    try:
+        await db.update_settings(payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"status": "success", "message": "Настройки сохранены."}
 
-    await db.update_settings(data)
-    return {"status": "success", "message": "Настройки успешно сохранены!"}
 
-@app.get("/api/chats")
+@api.get("/chats")
 async def get_chats():
-    chats = await db.list_chats()
-    return {"chats": chats}
+    return {"chats": await db.list_chats()}
 
-@app.post("/api/chats/toggle")
+
+@api.post("/chats/toggle")
 async def toggle_chat(payload: ChatToggle):
-    await db.set_chat_enabled(payload.chat_id, payload.is_enabled)
+    if not await db.set_chat_enabled(payload.chat_id, payload.is_enabled):
+        raise HTTPException(404, "Чат не найден.")
     return {"status": "success", "chat_id": payload.chat_id, "is_enabled": payload.is_enabled}
 
-@app.get("/api/stats")
+
+@api.get("/stats")
 async def get_stats():
-    stats = await db.get_stats()
     settings = await db.get_all_settings()
     return {
-        "stats": stats,
-        "active_model": settings.get("active_model", "gemini-2.5-flash"),
-        "is_paused": settings.get("is_paused", "0") == "1",
-        "admin_id": ADMIN_ID
+        "stats": await db.get_stats(),
+        "active_model": settings["active_model"],
+        "is_paused": settings["is_paused"] == "1",
     }
 
-@app.post("/api/test")
+
+@api.post("/test")
 async def test_persona(payload: TestMessage):
-    settings = await db.get_all_settings()
-    prov = settings.get("active_provider", "gemini")
-    model = settings.get("active_model", "gemini-2.5-flash")
-    api_key = settings.get(f"{prov}_api_key", "")
-    temp = float(settings.get("temperature", 0.75))
-    custom_sys = settings.get("custom_prompt") or None
-
     try:
-        raw_res = await llm_manager.generate_response(
-            provider=prov,
-            model_name=model,
-            api_key=api_key,
-            history=[{"is_outgoing": 0, "text": payload.message}],
-            custom_system_prompt=custom_sys,
-            temperature=temp
-        )
-        chunks = post_process_reply(raw_res)
-        return {"status": "success", "raw": raw_res, "chunks": chunks}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        chunks = await llm_manager.reply(await db.get_all_settings(), [{"text": payload.message}])
+    except ReplyError as exc:
+        raise HTTPException(502, str(exc)) from None
+    return {"status": "success", "chunks": chunks}
 
-# Mount static folder
+
+app.include_router(api)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

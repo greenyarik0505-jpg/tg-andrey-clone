@@ -1,10 +1,9 @@
 @echo off
+setlocal
 chcp 65001 > nul
-title AI-Clone Andrey Telegram Bot & Mini App
-echo ========================================================
-echo    AI-Клон Андрея (11-12 лет) - Telegram Bot & Mini App
-echo    Master Admin ID: 7150170715
-echo ========================================================
-echo.
+title Telegram Business - Mini App
+cd /d "%~dp0"
 python run.py
+set "app_exit=%errorlevel%"
 pause
+exit /b %app_exit%

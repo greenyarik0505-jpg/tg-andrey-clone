@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
-bot_data.db
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.settings.key
 .env
 *.log
 *.pdf

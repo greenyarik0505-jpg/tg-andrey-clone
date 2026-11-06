@@ -1,168 +1,228 @@
-"""Telegram Business Connection and Message Dispatcher."""
+"""Telegram Business routing for the configured account."""
 import asyncio
+import logging
 import random
 import time
-import logging
-from aiogram import Router, F, Bot
-from aiogram.types import BusinessConnection, Message
+from dataclasses import dataclass, field
+from weakref import WeakValueDictionary
+
+from aiogram import Bot, Router
+from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramAPIError
+from aiogram.types import BusinessConnection, BusinessMessagesDeleted, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
 from config import ADMIN_ID
+from core.llm_client import ReplyError, llm_manager
+from core.persona import AUTO_REPLY_PREFIX
+from core.settings import number, reply_delays
 from database.db import db
-from core.persona import check_sensitive_content, post_process_reply
-from core.llm_client import llm_manager
 
 logger = logging.getLogger(__name__)
 business_router = Router()
+connections: dict[str, BusinessConnection] = {}
+
+
+@dataclass
+class PendingChat:
+    newest: tuple[float, int] = (0, 0)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+pending_chats = WeakValueDictionary()
+
+
+def can_reply(conn):
+    return conn is not None and conn.is_enabled and bool(conn.rights and conn.rights.can_reply)
+
+
+async def fetch_connection(bot, connection_id):
+    try:
+        async with asyncio.timeout(8):
+            return await bot.get_business_connection(business_connection_id=connection_id)
+    except (TelegramAPIError, TimeoutError) as exc:
+        logger.warning("Business connection lookup failed (%s)", type(exc).__name__)
+        return None
+
+
+def business_request_button(request_id, label):
+    return InlineKeyboardButton(text=label, callback_data=f"business_approve:{request_id}")
+
+
+async def request_approval(conn, bot):
+    name = conn.user.full_name
+    if conn.user.username:
+        name += f" (@{conn.user.username})"
+    request_id = await db.add_business_request(conn.id, conn.user.id, name)
+    if request_id is None:
+        return
+    try:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[business_request_button(request_id, "Подтвердить аккаунт")]])
+        await bot.send_message(
+            ADMIN_ID,
+            f"Запрос на автоматизацию чатов\n\n{name}\nTelegram ID: {conn.user.id}\n\n"
+            "Подтвердите, если узнаёте этот аккаунт.",
+            reply_markup=keyboard,
+            parse_mode=None,
+        )
+    except TelegramAPIError as exc:
+        logger.warning("Could not notify admin of connection request (%s)", type(exc).__name__)
+
+
+async def get_connection(bot, connection_id, *, allow_request=False):
+    if connection_id in connections:
+        return connections[connection_id]
+    conn = await fetch_connection(bot, connection_id)
+    if conn is None:
+        return None
+    owner = await db.business_owner()
+    if conn.user.id == owner:
+        return connections.setdefault(connection_id, conn)
+    if allow_request and owner is None and conn.is_enabled:
+        await request_approval(conn, bot)
+    return None
+
 
 @business_router.business_connection()
 async def on_business_connection(conn: BusinessConnection, bot: Bot):
-    """Fires when a user connects or disconnects the bot in Telegram Business settings."""
-    user = conn.user
-    status = "ПОДКЛЮЧЕН" if conn.is_enabled else "ОТКЛЮЧЕН"
-    logger.info(f"Business connection {conn.id}: User {user.id} (@{user.username}) -> {status}")
-    
-    # Save connection ID to settings
-    await db.set_setting("business_connection_id", conn.id)
-    await db.set_setting("business_user_id", str(user.id))
-    
-    # Notify Master Admin
+    if conn.id in connections:
+        connections[conn.id] = conn
+    if not conn.is_enabled:
+        await db.remove_business_request(conn.id)
+    owner = await db.business_owner()
+    if owner is None and conn.is_enabled:
+        await request_approval(conn, bot)
+        return
+    if conn.user.id != owner:
+        return
+    connections[conn.id] = conn
+    status = "подключён" if conn.is_enabled else "отключён"
+    rights = "есть" if can_reply(conn) else "нет"
     try:
-        await bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                f"🔗 <b>Telegram Business обновление!</b>\n\n"
-                f"• Пользователь: {user.full_name} (@{user.username})\n"
-                f"• ID: <code>{user.id}</code>\n"
-                f"• Статус: <b>{status}</b>\n"
-                f"• Connection ID: <code>{conn.id}</code>\n"
-                f"• Можно отвечать: {'Да' if conn.can_reply else 'Нет'}"
-            ),
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.error(f"Failed to notify admin of business connection: {e}")
+        await bot.send_message(ADMIN_ID, f"Автоматизация чатов: аккаунт {status}. Право отвечать: {rights}.", parse_mode=None)
+    except TelegramAPIError as exc:
+        logger.warning("Could not notify admin of connection change (%s)", type(exc).__name__)
+
+
+def replies_allowed(state, received_at):
+    if not state.get("is_enabled") or state.get("is_paused") == "1":
+        return False
+    last_manual = state["last_human_message_time"]
+    return last_manual < received_at and time.time() - last_manual >= number(state, "human_takeover_minutes") * 60
+
+
+async def wait_before_send(bot, chat_id, connection_id, delay, typing, still_allowed):
+    deadline = time.monotonic() + delay
+    if typing:
+        while time.monotonic() < deadline:
+            if not await still_allowed():
+                return False
+            try:
+                async with asyncio.timeout(2):
+                    await bot.send_chat_action(chat_id=chat_id, action="typing", business_connection_id=connection_id)
+            except (TelegramAPIError, TimeoutError):
+                pass
+            await asyncio.sleep(max(0, min(3.5, deadline - time.monotonic())))
+    else:
+        await asyncio.sleep(delay)
+    return await still_allowed()
+
 
 @business_router.business_message()
 async def on_business_message(message: Message, bot: Bot):
-    """Handles incoming and outgoing messages across connected private chats."""
     conn_id = message.business_connection_id
-    if not conn_id:
+    sender = message.from_user
+    if (
+        not conn_id or message.chat.type != ChatType.PRIVATE or not sender or sender.is_bot
+        or message.sender_business_bot or message.message_id <= 0
+    ):
+        return
+
+    conn = await get_connection(bot, conn_id, allow_request=True)
+    if not conn or not conn.is_enabled:
         return
 
     chat_id = message.chat.id
-    sender_id = message.from_user.id if message.from_user else 0
-    sender_name = message.from_user.full_name if message.from_user else "Unknown"
-    text = message.text or message.caption or ""
-    
-    business_user_id = await db.get_setting("business_user_id", "")
-    is_outgoing = str(sender_id) == business_user_id
-
-    # 1. Record message to history
-    chat_info = await db.get_or_create_chat(
-        chat_id=chat_id,
-        chat_title=message.chat.title or sender_name,
-        username=message.chat.username or ""
-    )
-    await db.record_human_message(chat_id, sender_id, sender_name, text, is_outgoing=is_outgoing)
-
-    # 2. If the message was sent by the friend himself (outgoing), activate human takeover lockout
+    timestamp = message.date.timestamp()
+    is_outgoing = sender.id == conn.user.id
+    text = (message.text or message.caption or "").strip()
+    chat = message.chat
+    await db.get_or_create_chat(chat_id, chat.full_name or str(chat_id), chat.username or "")
     if is_outgoing:
-        logger.info(f"Human friend active in chat {chat_id}, resetting takeover timer.")
-        return
-
-    # 3. Check global pause
-    settings = await db.get_all_settings()
-    if settings.get("is_paused") == "1":
-        logger.info("Bot is globally paused, skipping message.")
-        return
-
-    # 4. Check if this chat is enabled in whitelist/blacklist
-    if not chat_info.get("is_enabled", 1):
-        logger.info(f"Chat {chat_id} is disabled, ignoring.")
-        return
-
-    # 5. Check Human Takeover (Did Andrey send a message recently?)
-    takeover_mins = float(settings.get("human_takeover_minutes", 15))
-    last_human_time = chat_info.get("last_human_message_time", 0)
-    if time.time() - last_human_time < (takeover_mins * 60):
-        logger.info(f"Human takeover active for chat {chat_id} (last message {int(time.time() - last_human_time)}s ago). Skipping.")
-        return
-
-    # 6. Sensitive content filter (Safety & Emergency trigger)
-    if settings.get("filter_sensitive") == "1" and check_sensitive_content(text):
-        logger.warning(f"Sensitive content detected in chat {chat_id}: {text}")
-        try:
-            await bot.send_message(
-                chat_id=ADMIN_ID,
-                text=(
-                    f"🚨 <b>Внимание! Срочный триггер в переписке</b>\n\n"
-                    f"• Чат: {chat_info.get('chat_title')} (@{chat_info.get('username')})\n"
-                    f"• Отправитель: {sender_name} (ID: {sender_id})\n"
-                    f"• Сообщение: <i>{text}</i>\n\n"
-                    f"⚠️ Бот временно заглушен в этом чате. Проверь переписку!"
-                ),
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logger.error(f"Failed to alert admin: {e}")
-        return
-
-    if not text:
-        # Ignore media without caption for now (stickers, photos)
-        return
-
-    # 7. Generate response using active LLM
-    prov = settings.get("active_provider", "gemini")
-    model = settings.get("active_model", "gemini-2.5-flash")
-    api_key = settings.get(f"{prov}_api_key", "")
-    temp = float(settings.get("temperature", 0.75))
-    custom_sys = settings.get("custom_prompt") or None
-
-    history = await db.get_recent_history(chat_id, limit=12)
-
-    try:
-        raw_reply = await llm_manager.generate_response(
-            provider=prov,
-            model_name=model,
-            api_key=api_key,
-            history=history,
-            custom_system_prompt=custom_sys,
-            temperature=temp
+        await db.record_human_message(
+            chat_id, sender.id, sender.full_name, text, is_outgoing=True,
+            message_id=message.message_id, connection_id=conn_id, timestamp=timestamp,
         )
-    except Exception as e:
-        logger.error(f"Error generating LLM reply: {e}")
+        return
+    if time.time() - timestamp > 300:
+        return  # Discover chats from the backlog without replying to stale messages.
+
+    pending = pending_chats.setdefault((conn_id, chat_id), PendingChat())
+    marker = (timestamp, message.message_id)
+    if marker <= pending.newest:
+        return
+    pending.newest = marker
+    state = await db.reply_state(chat_id, conn_id)
+    if not text or not can_reply(connections.get(conn_id)) or not replies_allowed(state, timestamp):
+        return
+    history_id = await db.record_human_message(
+        chat_id, sender.id, sender.full_name, text, message_id=message.message_id,
+        connection_id=conn_id, timestamp=timestamp,
+    )
+    if history_id is None:
         return
 
-    chunks = post_process_reply(raw_reply)
+    async def still_allowed():
+        state = await db.reply_state(chat_id, conn_id)
+        return (
+            pending.newest == marker
+            and state.get("latest_incoming") == history_id
+            and replies_allowed(state, timestamp)
+            and can_reply(connections.get(conn_id))
+        )
 
-    # 8. Human Delay & Typing Simulation
-    min_delay = float(settings.get("min_delay", 3))
-    max_delay = float(settings.get("max_delay", 8))
-    simulate_typing = settings.get("simulate_typing") == "1"
-
-    for i, chunk in enumerate(chunks):
-        # Calculate human-like pause
-        delay = random.uniform(min_delay, max_delay) if i == 0 else random.uniform(1.5, 3.5)
-        
-        if simulate_typing:
-            try:
-                await bot.send_chat_action(
-                    chat_id=chat_id,
-                    action="typing",
-                    business_connection_id=conn_id
-                )
-            except Exception as e:
-                logger.debug(f"Could not send typing action: {e}")
-        
-        await asyncio.sleep(delay)
-
-        # Send chunk
+    # Give successive messages a short window to arrive before generating a reply.
+    await asyncio.sleep(2)
+    async with pending.lock:
+        if not await still_allowed():
+            return
+        history = await db.get_recent_history(chat_id, limit=12, connection_id=conn_id)
+        history = [item for item in history if item["id"] != history_id][-11:]
+        history.append({"text": text, "is_outgoing": 0})
+        settings = await db.get_all_settings()
+        if not await still_allowed():
+            return
         try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=chunk,
-                business_connection_id=conn_id
-            )
-            await db.record_bot_message(chat_id, chunk)
-        except Exception as send_err:
-            logger.error(f"Failed to send business message chunk: {send_err}")
-            break
+            chunks = await llm_manager.reply(settings, history)
+        except ReplyError as exc:
+            logger.warning("Automatic reply skipped: %s", exc)
+            return
+
+        minimum, maximum = reply_delays(settings)
+        for index, chunk in enumerate(chunks):
+            typing_time = len(chunk) / random.uniform(6, 10)
+            low = minimum if index == 0 else min(minimum, 2)
+            delay = min(maximum, max(low, typing_time + random.uniform(1, 3)))
+            if not await wait_before_send(bot, chat_id, conn_id, delay, settings["simulate_typing"] == "1", still_allowed):
+                return
+            try:
+                sent = await bot.send_message(
+                    chat_id=chat_id, text=AUTO_REPLY_PREFIX + chunk, parse_mode=None,
+                    business_connection_id=conn_id,
+                )
+            except TelegramAPIError as exc:
+                logger.warning("Could not send automatic reply (%s)", type(exc).__name__)
+                return
+            await db.record_bot_message(chat_id, chunk, message_id=sent.message_id, connection_id=conn_id)
+
+
+@business_router.deleted_business_messages()
+async def on_deleted_messages(event: BusinessMessagesDeleted, bot: Bot):
+    if await get_connection(bot, event.business_connection_id):
+        await db.delete_business_messages(event.business_connection_id, event.chat.id, event.message_ids)
+
+
+@business_router.edited_business_message()
+async def on_edited_message(message: Message, bot: Bot):
+    conn_id = message.business_connection_id
+    if conn_id and await get_connection(bot, conn_id):
+        await db.delete_business_messages(conn_id, message.chat.id, [message.message_id])

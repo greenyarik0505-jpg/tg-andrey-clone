@@ -1,274 +1,308 @@
-"""Admin handlers and inline controls for Master Admin (7150170715)."""
-import time
-from aiogram import Router, F
-from aiogram.filters import Command, CommandStart
-from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
-)
-from config import ADMIN_ID, WEBAPP_URL, SUPPORTED_MODELS
+"""Private Telegram controls for the configured administrator."""
+from html import escape
+from urllib.parse import urlsplit
+
+from aiogram import Bot, F, Router
+from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramAPIError
+from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+
+from bot.business import business_request_button, can_reply, fetch_connection
+from config import ADMIN_ID, API_KEY_FIELDS, LEGACY_MODELS, SUPPORTED_MODELS, WEBAPP_URL
+from core.llm_client import ReplyError, llm_manager
+from core.settings import number, reply_delays
 from database.db import db
-from core.persona import post_process_reply, ANDREY_BASE_SYSTEM_PROMPT
-from core.llm_client import llm_manager
 
 admin_router = Router()
+admin_router.message.filter(F.chat.type == ChatType.PRIVATE)
+admin_router.callback_query.filter(F.from_user.id == ADMIN_ID, F.message.chat.type == ChatType.PRIVATE)
 
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
 
-def get_main_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
-    buttons = []
-    if webapp_url and webapp_url.startswith("https://"):
-        buttons.append([InlineKeyboardButton(text="🚀 Открыть Mini App Админку", web_app=WebAppInfo(url=webapp_url))])
-    
-    buttons.append([
-        InlineKeyboardButton(text="🤖 Выбрать модель", callback_data="admin_models"),
-        InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")
+def is_admin(message):
+    return message.from_user is not None and message.from_user.id == ADMIN_ID
+
+
+def webapp_button():
+    try:
+        url = urlsplit(WEBAPP_URL)
+        if url.scheme == "https" and url.hostname and not url.username and not url.password:
+            return InlineKeyboardButton(text="🚀 Открыть Mini App", web_app=WebAppInfo(url=WEBAPP_URL))
+    except ValueError:
+        pass
+    return None
+
+
+def back_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="‹ Назад", callback_data="admin_back")]])
+
+
+def main_keyboard():
+    button = webapp_button()
+    rows = [[button]] if button else []
+    rows.extend([
+        [InlineKeyboardButton(text="Модели", callback_data="admin_models"),
+         InlineKeyboardButton(text="Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="Чаты", callback_data="admin_chats"),
+         InlineKeyboardButton(text="Пауза / Пуск", callback_data="admin_toggle_pause")],
+        [InlineKeyboardButton(text="Подключение", callback_data="admin_business"),
+         InlineKeyboardButton(text="Команды", callback_data="admin_help")],
     ])
-    buttons.append([
-        InlineKeyboardButton(text="💬 Активные чаты", callback_data="admin_chats"),
-        InlineKeyboardButton(text="⏸ Пауза / Пуск", callback_data="admin_toggle_pause")
-    ])
-    buttons.append([
-        InlineKeyboardButton(text="🔑 Настройка ключей", callback_data="admin_keys_menu"),
-        InlineKeyboardButton(text="⚡ Тест ответа", callback_data="admin_test_prompt")
-    ])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def model_keyboard():
+    rows = [
+        [InlineKeyboardButton(text=model["name"], callback_data=f"set_model_{model['id']}")]
+        for model in SUPPORTED_MODELS
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows + back_keyboard().inline_keyboard)
+
+
+async def home_text():
+    settings = await db.get_all_settings()
+    status = "⏸ Пауза" if settings["is_paused"] == "1" else "🟢 Автоответы разрешены"
+    return (
+        f"Автоматизация чатов Telegram\n\n{status}\n"
+        f"Модель: {settings['active_model']}\n\n"
+        "Автоответы работают в разрешённых в Telegram чатах и помечаются в сообщениях."
+    )
+
+
+async def stats_text():
+    settings = await db.get_all_settings()
+    stats = await db.get_stats()
+    minimum, maximum = reply_delays(settings)
+    takeover = number(settings, "human_takeover_minutes")
+    return (
+        f"Модель: {settings['active_model']}\n"
+        f"Задержка: {minimum:g}–{maximum:g} с\n"
+        f"Пауза после ручного ответа: {takeover:g} мин\n"
+        f"Чаты с автоответами: {stats['active_chats']} из {stats['total_chats']}\n"
+        f"Ответы бота в истории: {stats['total_sent']}\n"
+        f"Входящие в истории: {stats['total_received']}"
+    )
+
 
 @admin_router.message(CommandStart())
 async def cmd_start(message: Message):
-    if not is_admin(message.from_user.id):
-        # Friend or third-party user
-        await message.answer(
-            "👋 Привет! Это бот-двойник Андрея.\n"
-            "Чтобы подключить бота к ответам в твоих переписках:\n"
-            "1. Зайди в Настройки Telegram ➔ Telegram Business ➔ Чат-боты\n"
-            "2. Выбери этого бота и включи доступ к нужным чатам."
-        )
-        return
+    if is_admin(message):
+        await message.answer(await home_text(), reply_markup=main_keyboard())
+    else:
+        owner = await db.business_owner()
+        if message.from_user and owner in (None, message.from_user.id):
+            await message.answer("Откройте Настройки → Автоматизация чатов и добавьте этого бота в выбранные чаты.")
+        else:
+            await message.answer("Это бот автоматических ответов Telegram.")
 
-    # Master Admin interface
-    settings = await db.get_all_settings()
-    active_model = settings.get("active_model", "gemini-2.5-flash")
-    is_paused = settings.get("is_paused", "0") == "1"
-    status_text = "⏸ НА ПАУЗЕ" if is_paused else "🟢 АКТИВЕН"
-    
-    webapp_url = await db.get_setting("webapp_url", WEBAPP_URL)
 
-    text = (
-        f"👑 <b>Панель управления AI-Двойником (Андрей)</b>\n\n"
-        f"• <b>Статус автоответов:</b> {status_text}\n"
-        f"• <b>Активная модель:</b> <code>{active_model}</code>\n"
-        f"• <b>Режим:</b> Telegram Business + TMA\n"
-        f"• <b>Имитация:</b> Школьник 11-12 лет (Brawl Stars, Standoff, Аниме)\n\n"
-        f"Управляй системой через Mini App или кнопками ниже:"
+async def business_panel():
+    owner = await db.business_owner()
+    if owner is not None:
+        return f"Разрешённый аккаунт: {owner}\nПодключение и список доступных чатов меняются в настройках Telegram.", back_keyboard()
+    requests = await db.business_requests()
+    if not requests:
+        return "Запросов пока нет. Добавьте бота через Настройки → Автоматизация чатов на нужном аккаунте.", back_keyboard()
+    rows = [
+        [business_request_button(item["id"], f"{item['name'][:35]} · {item['user_id']}")]
+        for item in requests
+    ]
+    return "Выберите знакомый аккаунт для подтверждения.", InlineKeyboardMarkup(
+        inline_keyboard=rows + back_keyboard().inline_keyboard
     )
-    await message.answer(text, reply_markup=get_main_keyboard(webapp_url), parse_mode="HTML")
+
+
+@admin_router.message(Command("business"))
+async def cmd_business(message: Message):
+    if is_admin(message):
+        text, keyboard = await business_panel()
+        await message.answer(text, reply_markup=keyboard)
+
+
+@admin_router.callback_query(F.data == "admin_business")
+async def cb_business(callback: CallbackQuery):
+    await callback.answer()
+    text, keyboard = await business_panel()
+    await callback.message.edit_text(text, reply_markup=keyboard)
+
+
+@admin_router.callback_query(F.data.regexp(r"^business_approve:[A-Za-z0-9_-]{16}$"))
+async def cb_approve_business(callback: CallbackQuery, bot: Bot):
+    request_id = callback.data.split(":")[1]
+    requests = await db.business_requests(request_id)
+    if not requests:
+        await callback.answer("Запрос уже обработан или истёк.", show_alert=True)
+        return
+    request = requests[0]
+    connection = await fetch_connection(bot, request["connection_id"])
+    if not connection or not connection.is_enabled or connection.user.id != request["user_id"]:
+        await callback.answer("Подключение недоступно. Проверьте его в настройках Telegram.", show_alert=True)
+        return
+    if not await db.approve_business_request(request_id, connection.user.id):
+        await callback.answer("Запрос уже обработан или истёк.", show_alert=True)
+        return
+    await callback.answer("Аккаунт подтверждён.")
+    status = "Автоответы готовы в разрешённых чатах." if can_reply(connection) else "Разрешите боту отвечать в настройках Telegram."
+    await callback.message.edit_text(f"Подтверждён аккаунт {request['name']}.\n{status}", reply_markup=back_keyboard())
+
 
 @admin_router.message(Command("status"))
 async def cmd_status(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    settings = await db.get_all_settings()
-    stats = await db.get_stats()
-    
-    text = (
-        f"📊 <b>Текущий статус системы:</b>\n"
-        f"• Модель: <code>{settings.get('active_model')}</code>\n"
-        f"• Провайдер: <code>{settings.get('active_provider')}</code>\n"
-        f"• Задержка ответа: {settings.get('min_delay')}–{settings.get('max_delay')} сек\n"
-        f"• Human Takeover: {settings.get('human_takeover_minutes')} минут\n"
-        f"• Всего чатов: {stats['total_chats']} (активных: {stats['active_chats']})\n"
-        f"• Отправлено сообщений: {stats['total_sent']}\n"
-        f"• Получено сообщений: {stats['total_received']}\n"
-    )
-    await message.answer(text, parse_mode="HTML")
+    if is_admin(message):
+        await message.answer(await stats_text())
+
 
 @admin_router.message(Command("setkey"))
 async def cmd_setkey(message: Message):
-    if not is_admin(message.from_user.id):
+    if not is_admin(message):
         return
     parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer(
-            "Формат: <code>/setkey [provider] [key]</code>\n"
-            "Примеры:\n"
-            "<code>/setkey gemini AIzaSy...</code>\n"
-            "<code>/setkey openai sk-proj-...</code>\n"
-            "<code>/setkey deepseek sk-...</code>\n"
-            "<code>/setkey anthropic sk-ant-...</code>\n"
-            "<code>/setkey groq gsk_...</code>\n"
-            "<code>/setkey openrouter sk-or-...</code>",
-            parse_mode="HTML"
-        )
+    if len(parts) != 3 or f"{parts[1].lower()}_api_key" not in API_KEY_FIELDS:
+        await message.answer("Формат: /setkey провайдер ключ. Ключ можно также задать в Mini App.")
         return
-    
-    prov = parts[1].lower()
-    key = parts[2].strip()
-    setting_name = f"{prov}_api_key"
-    await db.set_setting(setting_name, key)
-    await message.answer(f"✅ Ключ для <b>{prov}</b> сохранен!", parse_mode="HTML")
+
+    provider = parts[1].lower()
+    try:
+        await db.set_setting(f"{provider}_api_key", parts[2])
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+    await remove_secret_message(message)
+    await message.answer(f"Ключ для {provider} сохранён.")
+
+
+async def remove_secret_message(message):
+    try:
+        await message.delete()
+    except TelegramAPIError:
+        pass
+
 
 @admin_router.message(Command("custom"))
 async def cmd_custom(message: Message):
-    if not is_admin(message.from_user.id):
+    if not is_admin(message):
         return
     parts = message.text.split(maxsplit=3)
     if len(parts) < 3:
-        await message.answer(
-            "Формат команды кастомного провайдера:\n"
-            "<code>/custom [Base_URL] [Model_Name] [API_Key]</code>\n\n"
-            "Пример:\n"
-            "<code>/custom https://openrouter.ai/api/v1 mistralai/mistral-large sk-or-v1-...</code>",
-            parse_mode="HTML"
-        )
+        await message.answer("Формат: /custom URL название_модели [ключ]")
         return
-    base_url = parts[1].strip()
-    model_name = parts[2].strip()
-    api_key = parts[3].strip() if len(parts) > 3 else ""
 
-    await db.set_setting("active_model", "custom-model")
-    await db.set_setting("active_provider", "custom")
-    await db.set_setting("custom_base_url", base_url)
-    await db.set_setting("custom_model_name", model_name)
-    if api_key:
-        await db.set_setting("custom_api_key", api_key)
+    changes = {"active_model": "custom-model", "custom_base_url": parts[1], "custom_model_name": parts[2]}
+    if len(parts) == 4:
+        changes["custom_api_key"] = parts[3]
+    try:
+        await db.update_settings(changes)
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+    if "custom_api_key" in changes:
+        await remove_secret_message(message)
+    await message.answer("Кастомный провайдер активирован.")
 
-    await message.answer(
-        f"✅ <b>Кастомный провайдер активирован!</b>\n"
-        f"• Base URL: <code>{base_url}</code>\n"
-        f"• Модель: <code>{model_name}</code>\n"
-        f"• Ключ: {'Сохранен' if api_key else 'Без ключа'}",
-        parse_mode="HTML"
-    )
 
 @admin_router.message(Command("model"))
 async def cmd_model(message: Message):
-    if not is_admin(message.from_user.id):
+    if not is_admin(message):
         return
     parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        # Show selection keyboard
-        kb_buttons = []
-        for m in SUPPORTED_MODELS:
-            kb_buttons.append([InlineKeyboardButton(text=f"🔹 {m['name']}", callback_data=f"set_model_{m['id']}")])
-        await message.answer("Выбери нейросеть для генерации ответов:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons))
+    if len(parts) == 1:
+        await message.answer("Выберите модель.", reply_markup=model_keyboard())
         return
-    
-    chosen = parts[1].strip()
-    # Match supported
-    match = next((m for m in SUPPORTED_MODELS if m["id"] == chosen), None)
-    if match:
-        await db.set_setting("active_model", match["id"])
-        await db.set_setting("active_provider", match["provider"])
-        await message.answer(f"✅ Активная модель переключена на <b>{match['name']}</b>", parse_mode="HTML")
-    else:
-        await message.answer(f"⚠️ Неизвестная модель. Доступные: {', '.join([m['id'] for m in SUPPORTED_MODELS])}")
+    model = parts[1].strip()
+    model = LEGACY_MODELS.get(model, model)
+    try:
+        await db.set_setting("active_model", model)
+    except ValueError as exc:
+        await message.answer(str(exc), reply_markup=model_keyboard())
+        return
+    await message.answer(f"Активная модель: {model}")
+
 
 @admin_router.message(Command("test"))
 async def cmd_test(message: Message):
-    if not is_admin(message.from_user.id):
+    if not is_admin(message):
         return
     parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer("Формат: <code>/test Привет как дела</code>", parse_mode="HTML")
+    if len(parts) != 2 or not parts[1].strip():
+        await message.answer("Формат: /test Привет, как дела?")
         return
-    
-    prompt_text = parts[1]
-    wait_msg = await message.answer("⏳ Андрей думает...")
-    
-    settings = await db.get_all_settings()
-    prov = settings.get("active_provider", "gemini")
-    model = settings.get("active_model", "gemini-2.5-flash")
-    api_key = settings.get(f"{prov}_api_key", "")
-    temp = float(settings.get("temperature", 0.75))
-    custom_sys = settings.get("custom_prompt") or None
-
+    wait_msg = await message.answer("Запрашиваю тестовый ответ…")
     try:
-        raw_res = await llm_manager.generate_response(
-            provider=prov,
-            model_name=model,
-            api_key=api_key,
-            history=[{"is_outgoing": 0, "text": prompt_text}],
-            custom_system_prompt=custom_sys,
-            temperature=temp
-        )
-        chunks = post_process_reply(raw_res)
-        res_text = (
-            f"🎯 <b>Тестовый ответ Андрея ({model}):</b>\n\n"
-            + "\n".join([f"💬 <code>{c}</code>" for c in chunks])
-        )
-        await wait_msg.edit_text(res_text, parse_mode="HTML")
-    except Exception as e:
-        await wait_msg.edit_text(f"❌ Ошибка генерации: {e}")
+        chunks = await llm_manager.reply(await db.get_all_settings(), [{"text": parts[1]}])
+    except ReplyError as exc:
+        await wait_msg.edit_text(str(exc))
+        return
+    content = "\n\n".join(escape(chunk) for chunk in chunks)
+    await wait_msg.edit_text(f"<b>Тестовый автоответ</b>\n\n{content}", parse_mode="HTML")
+
+
+@admin_router.message(Command("pause", "unpause"))
+async def cmd_pause(message: Message, command: CommandObject):
+    if is_admin(message):
+        paused = command.command.lower() == "pause"
+        await db.set_setting("is_paused", "1" if paused else "0")
+        await message.answer("Автоответы на паузе." if paused else "Автоответы возобновлены.")
+
 
 @admin_router.callback_query(F.data.startswith("set_model_"))
 async def cb_set_model(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
+    model = callback.data.removeprefix("set_model_")
+    model = LEGACY_MODELS.get(model, model)
+    try:
+        await db.set_setting("active_model", model)
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
         return
-    model_id = callback.data.replace("set_model_", "")
-    match = next((m for m in SUPPORTED_MODELS if m["id"] == model_id), None)
-    if match:
-        await db.set_setting("active_model", match["id"])
-        await db.set_setting("active_provider", match["provider"])
-        await callback.message.edit_text(f"✅ Активная модель установлена: <b>{match['name']}</b>", parse_mode="HTML")
-    await callback.answer()
+    await callback.answer("Модель сохранена")
+    await callback.message.edit_text(await home_text(), reply_markup=main_keyboard())
+
 
 @admin_router.callback_query(F.data == "admin_models")
 async def cb_admin_models(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    kb_buttons = []
-    for m in SUPPORTED_MODELS:
-        kb_buttons.append([InlineKeyboardButton(text=f"🔹 {m['name']}", callback_data=f"set_model_{m['id']}")])
-    kb_buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")])
-    await callback.message.edit_text("Выбери нейросеть для ответов:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_buttons))
     await callback.answer()
+    await callback.message.edit_text("Выберите модель.", reply_markup=model_keyboard())
+
 
 @admin_router.callback_query(F.data == "admin_stats")
 async def cb_admin_stats(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    stats = await db.get_stats()
-    text = (
-        f"📊 <b>Статистика бота:</b>\n\n"
-        f"• Всего подключенных чатов: {stats['total_chats']}\n"
-        f"• Активных чатов (автоответ): {stats['active_chats']}\n"
-        f"• Отправлено сообщений: {stats['total_sent']}\n"
-        f"• Принято сообщений: {stats['total_received']}\n"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="◀️ Назад", callback_data="admin_back")]])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
+    await callback.message.edit_text(await stats_text(), reply_markup=back_keyboard())
+
+
+@admin_router.callback_query(F.data == "admin_chats")
+async def cb_admin_chats(callback: CallbackQuery):
+    await callback.answer()
+    chats = await db.list_chats()
+    lines = [f"{'●' if chat['is_enabled'] else '○'} {chat['chat_title'] or chat['chat_id']}" for chat in chats[:20]]
+    if len(chats) > 20:
+        lines.append(f"И ещё {len(chats) - 20} в Mini App")
+    lines.append("Управление доступом к чатам находится в Mini App." if chats else "Подключённых чатов пока нет.")
+    button = webapp_button()
+    keyboard = back_keyboard()
+    if button:
+        keyboard.inline_keyboard.insert(0, [button])
+    await callback.message.edit_text("\n".join(lines), reply_markup=keyboard)
+
+
+@admin_router.callback_query(F.data.in_({"admin_help", "admin_keys_menu", "admin_test_prompt"}))
+async def cb_admin_help(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text(
+        "Настройки доступны в Mini App.\n\n"
+        "/status — статистика\n/business — подключение аккаунта\n/model — модель\n/test текст — пробный ответ\n"
+        "/pause и /unpause — управление автоответами\n/setkey и /custom — настройка провайдера",
+        reply_markup=back_keyboard(),
+    )
+
 
 @admin_router.callback_query(F.data == "admin_toggle_pause")
 async def cb_toggle_pause(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    curr = await db.get_setting("is_paused", "0")
-    new_val = "0" if curr == "1" else "1"
-    await db.set_setting("is_paused", new_val)
-    status_str = "⏸ Бот поставлен на паузу" if new_val == "1" else "🟢 Бот возобновил автоответы"
-    await callback.answer(status_str, show_alert=True)
-    
-    webapp_url = await db.get_setting("webapp_url", WEBAPP_URL)
-    await callback.message.edit_reply_markup(reply_markup=get_main_keyboard(webapp_url))
+    paused = await db.toggle_pause()
+    await callback.answer("Автоответы на паузе" if paused else "Автоответы возобновлены")
+    await callback.message.edit_text(await home_text(), reply_markup=main_keyboard())
+
 
 @admin_router.callback_query(F.data == "admin_back")
 async def cb_admin_back(callback: CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        return
-    settings = await db.get_all_settings()
-    active_model = settings.get("active_model", "gemini-2.5-flash")
-    is_paused = settings.get("is_paused", "0") == "1"
-    status_text = "⏸ НА ПАУЗЕ" if is_paused else "🟢 АКТИВЕН"
-    webapp_url = await db.get_setting("webapp_url", WEBAPP_URL)
-    
-    text = (
-        f"👑 <b>Панель управления AI-Двойником (Андрей)</b>\n\n"
-        f"• <b>Статус автоответов:</b> {status_text}\n"
-        f"• <b>Активная модель:</b> <code>{active_model}</code>\n"
-        f"• <b>Режим:</b> Telegram Business + TMA\n\n"
-        f"Управляй системой через Mini App или кнопками ниже:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_main_keyboard(webapp_url), parse_mode="HTML")
     await callback.answer()
+    await callback.message.edit_text(await home_text(), reply_markup=main_keyboard())
