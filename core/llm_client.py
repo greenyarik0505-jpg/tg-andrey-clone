@@ -1,214 +1,138 @@
-"""Multi-provider LLM connector supporting Gemini, OpenAI, DeepSeek, Claude, Groq, OpenRouter."""
-import os
-import httpx
+"""Send normalized requests to the selected language model provider."""
+import asyncio
 import logging
-from typing import List, Dict, Any, Optional
-from core.persona import ANDREY_BASE_SYSTEM_PROMPT, FEW_SHOT_DIALOGS
+
+import httpx
+
+from config import DEFAULT_MODEL, MODEL_PROVIDERS
+from core.persona import ANDREY_BASE_SYSTEM_PROMPT, post_process_reply
+from core.settings import custom_endpoint, number, provider_key
 
 logger = logging.getLogger(__name__)
 
+OPENAI_ENDPOINTS = {
+    "openai": "https://api.openai.com/v1/chat/completions",
+    "deepseek": "https://api.deepseek.com/chat/completions",
+    "groq": "https://api.groq.com/openai/v1/chat/completions",
+    "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+}
+MODEL_IDS = {"openrouter-auto": "openrouter/auto"}
+
+
+class ReplyError(Exception):
+    """A provider error that can safely be displayed to the admin."""
+
+
 class LLMManager:
     def __init__(self):
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = None
+        self.slots = asyncio.Semaphore(8)
 
-    async def generate_response(
-        self,
-        provider: str,
-        model_name: str,
-        api_key: str,
-        history: List[Dict[str, Any]],
-        custom_system_prompt: Optional[str] = None,
-        temperature: float = 0.75
-    ) -> str:
-        """Dispatches request to the active LLM provider."""
-        system_prompt = custom_system_prompt if custom_system_prompt else ANDREY_BASE_SYSTEM_PROMPT
+    async def close(self):
+        if self.client is not None:
+            await self.client.aclose()
+            self.client = None
 
-        # Build messages structure
-        messages = [{"role": "system", "content": system_prompt}]
-        
-        # Inject few-shot examples
-        for fs in FEW_SHOT_DIALOGS:
-            messages.append({"role": "user", "content": fs["user"]})
-            messages.append({"role": "assistant", "content": fs["reply"]})
+    async def reply(self, settings, history):
+        model = settings.get("active_model", DEFAULT_MODEL)
+        provider = MODEL_PROVIDERS.get(model)
+        if not provider:
+            raise ReplyError("Выберите модель в настройках.")
+        key = provider_key(settings, provider)
+        if provider != "custom" and not key:
+            raise ReplyError("Для выбранного провайдера нужен API-ключ.")
 
-        # Inject chat history
-        for msg in history:
-            role = "assistant" if msg.get("is_outgoing") else "user"
-            content = msg.get("text", "")
-            if content:
-                messages.append({"role": role, "content": content})
-
+        prompt = ANDREY_BASE_SYSTEM_PROMPT
+        if settings.get("custom_prompt"):
+            prompt += "\nДополнительные пожелания к стилю, если они совместимы с правилами выше:\n" + settings["custom_prompt"]
+        messages = [
+            {"role": "assistant" if item.get("is_outgoing") else "user", "content": item["text"][:4096]}
+            for item in history if item.get("text")
+        ]
+        first_user = next((index for index, message in enumerate(messages) if message["role"] == "user"), None)
+        if first_user is None:
+            raise ReplyError("Введите сообщение для генерации ответа.")
+        messages = messages[first_user:]
+        if provider == "custom":
+            model = settings.get("custom_model_name", "").strip()
+            if not model:
+                raise ReplyError("Укажите название кастомной модели.")
+            try:
+                endpoint = custom_endpoint(settings.get("custom_base_url", ""))
+            except ValueError as exc:
+                raise ReplyError(str(exc)) from None
+        else:
+            endpoint = OPENAI_ENDPOINTS.get(provider)
         try:
-            if provider == "gemini":
-                return await self._call_gemini(model_name, api_key, messages, temperature)
-            elif provider in ("openai", "deepseek", "groq", "openrouter"):
-                return await self._call_openai_compatible(provider, model_name, api_key, messages, temperature)
-            elif provider == "custom":
-                return await self._call_custom_provider(model_name, api_key, messages, temperature)
-            elif provider == "anthropic":
-                return await self._call_anthropic(model_name, api_key, messages, temperature)
-            else:
-                return await self._call_gemini(model_name, api_key, messages, temperature)
-        except Exception as e:
-            logger.error(f"Error calling LLM provider {provider} ({model_name}): {e}")
-            raise e
+            async with asyncio.timeout(35), self.slots:
+                provider_model = MODEL_IDS.get(model, model) if provider != "custom" else model
+                raw = await self._generate(
+                    provider, provider_model, endpoint, key, prompt, messages, number(settings, "temperature"),
+                )
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            logger.warning("LLM provider %s returned HTTP %d", provider, status)
+            if status == 429:
+                raise ReplyError("Провайдер ограничил запросы. Попробуйте позже.") from None
+            if status in (401, 403):
+                raise ReplyError("Провайдер отклонил запрос. Проверьте ключ и права доступа.") from None
+            raise ReplyError(f"Провайдер отклонил запрос (HTTP {status}). Проверьте выбранную модель.") from None
+        except (TimeoutError, httpx.TimeoutException):
+            raise ReplyError("Провайдер не ответил вовремя.") from None
+        except (httpx.HTTPError, AttributeError, KeyError, TypeError, ValueError, IndexError):
+            raise ReplyError("Не удалось получить ответ от провайдера.") from None
 
-    async def _call_gemini(self, model: str, api_key: str, messages: List[Dict[str, str]], temperature: float) -> str:
-        """Call Google Gemini using google.genai SDK or direct REST API."""
-        if not api_key:
-            # Fallback to env GEMINI_API_KEY if present
-            api_key = os.getenv("GEMINI_API_KEY", "")
-        if not api_key:
-            raise ValueError("Gemini API key is not configured in settings or environment.")
+        chunks = post_process_reply(raw, split=settings.get("split_messages", "1") == "1") if isinstance(raw, str) else []
+        if not chunks:
+            raise ReplyError("Модель вернула пустой ответ.")
+        return chunks
 
-        # Attempt SDK first
-        try:
-            from google import genai
-            from google.genai import types
-            
-            client = genai.Client(api_key=api_key)
-            
-            # Format contents
-            contents = []
-            sys_instruct = ""
-            for m in messages:
-                if m["role"] == "system":
-                    sys_instruct = m["content"]
-                else:
-                    role = "user" if m["role"] == "user" else "model"
-                    contents.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
-
-            config = types.GenerateContentConfig(
-                temperature=temperature,
-                system_instruction=sys_instruct if sys_instruct else None
+    async def _generate(self, provider, model, endpoint, key, prompt, messages, temperature):
+        if self.client is None:
+            self.client = httpx.AsyncClient(timeout=25, follow_redirects=False, trust_env=False)
+        if provider == "gemini":
+            contents = [
+                {"role": "model" if item["role"] == "assistant" else "user", "parts": [{"text": item["content"]}]}
+                for item in messages
+            ]
+            thinking = {"thinkingLevel": "LOW"} if model == "gemini-3.8-flash" else {"thinkingBudget": 0}
+            data = await self._post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                {"x-goog-api-key": key},
+                {"contents": contents, "systemInstruction": {"parts": [{"text": prompt}]},
+                 "generationConfig": {"temperature": temperature, "maxOutputTokens": 1024, "thinkingConfig": thinking}},
             )
-            response = await client.aio.models.generate_content(
-                model=model,
-                contents=contents,
-                config=config
+            parts = data["candidates"][0]["content"]["parts"]
+            return "".join(part.get("text", "") for part in parts if not part.get("thought"))
+
+        if provider == "anthropic":
+            data = await self._post(
+                "https://api.anthropic.com/v1/messages",
+                {"x-api-key": key, "anthropic-version": "2023-06-01"},
+                {"model": model, "system": prompt, "messages": messages,
+                 "thinking": {"type": "between_tools"}, "max_tokens": 300},
             )
-            if response and response.text:
-                return response.text
-        except Exception as sdk_err:
-            logger.warning(f"SDK call failed, falling back to REST: {sdk_err}")
+            return "".join(part["text"] for part in data["content"] if part.get("type") == "text")
 
-        # REST API fallback
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        gemini_contents = []
-        system_instruction = None
-        for m in messages:
-            if m["role"] == "system":
-                system_instruction = {"parts": [{"text": m["content"]}]}
-            else:
-                role = "user" if m["role"] == "user" else "model"
-                gemini_contents.append({"role": role, "parts": [{"text": m["content"]}]})
-
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
         payload = {
-            "contents": gemini_contents,
-            "generationConfig": {"temperature": temperature}
+            "model": model, "messages": [{"role": "system", "content": prompt}, *messages],
+            "temperature": temperature,
+            "max_tokens": 300,
         }
-        if system_instruction:
-            payload["systemInstruction"] = system_instruction
-
-        res = await self.client.post(url, json=payload, headers={"Content-Type": "application/json"})
-        res.raise_for_status()
-        data = res.json()
-        candidates = data.get("candidates", [])
-        if candidates and "content" in candidates[0]:
-            parts = candidates[0]["content"].get("parts", [])
-            if parts and "text" in parts[0]:
-                return parts[0]["text"]
-        return "пон"
-
-    async def _call_openai_compatible(self, provider: str, model: str, api_key: str, messages: List[Dict[str, str]], temperature: float) -> str:
-        """Calls OpenAI, DeepSeek, Groq, or OpenRouter via OpenAI Chat Completions endpoint."""
-        base_urls = {
-            "openai": "https://api.openai.com/v1/chat/completions",
-            "deepseek": "https://api.deepseek.com/v1/chat/completions",
-            "groq": "https://api.groq.com/openai/v1/chat/completions",
-            "openrouter": "https://openrouter.ai/api/v1/chat/completions"
-        }
-        url = base_urls.get(provider, "https://api.openai.com/v1/chat/completions")
-        
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        if provider == "openrouter":
-            headers["HTTP-Referer"] = "https://t.me"
-            headers["X-Title"] = "Andrey Digital Twin"
-
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature
-        }
-
-        res = await self.client.post(url, json=payload, headers=headers)
-        res.raise_for_status()
-        data = res.json()
+        if provider == "deepseek":
+            payload["thinking"] = {"type": "disabled"}
+        if provider == "groq":
+            payload["reasoning_effort"] = "low"
+            del payload["max_tokens"]
+            payload["max_completion_tokens"] = 1024
+        data = await self._post(endpoint, headers, payload)
         return data["choices"][0]["message"]["content"]
 
-    async def _call_custom_provider(self, model: str, api_key: str, messages: List[Dict[str, str]], temperature: float) -> str:
-        """Calls custom OpenAI-compatible endpoint."""
-        from database.db import db
-        settings = await db.get_all_settings()
-        base_url = settings.get("custom_base_url", "").strip()
-        custom_model = settings.get("custom_model_name", "").strip() or model
-        custom_key = settings.get("custom_api_key", "").strip() or api_key
+    async def _post(self, url, headers, payload):
+        response = await self.client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()
 
-        if not base_url:
-            raise ValueError("Кастомный Base URL не настроен в панели управления!")
-
-        # Format URL
-        url = base_url.rstrip("/")
-        if not url.endswith("/chat/completions"):
-            url += "/chat/completions"
-
-        headers = {
-            "Content-Type": "application/json"
-        }
-        if custom_key:
-            headers["Authorization"] = f"Bearer {custom_key}"
-
-        payload = {
-            "model": custom_model,
-            "messages": messages,
-            "temperature": temperature
-        }
-
-        res = await self.client.post(url, json=payload, headers=headers)
-        res.raise_for_status()
-        data = res.json()
-        return data["choices"][0]["message"]["content"]
-
-
-    async def _call_anthropic(self, model: str, api_key: str, messages: List[Dict[str, str]], temperature: float) -> str:
-        """Call Anthropic Messages API."""
-        url = "https://api.anthropic.com/v1/messages"
-        headers = {
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-        system_text = ""
-        user_msgs = []
-        for m in messages:
-            if m["role"] == "system":
-                system_text = m["content"]
-            else:
-                user_msgs.append({"role": m["role"], "content": m["content"]})
-
-        payload = {
-            "model": model if model != "claude-3-5-sonnet" else "claude-3-5-sonnet-20241022",
-            "max_tokens": 150,
-            "system": system_text,
-            "messages": user_msgs,
-            "temperature": temperature
-        }
-        res = await self.client.post(url, json=payload, headers=headers)
-        res.raise_for_status()
-        data = res.json()
-        return data["content"][0]["text"]
 
 llm_manager = LLMManager()

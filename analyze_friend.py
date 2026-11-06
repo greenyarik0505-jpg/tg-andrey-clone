@@ -1,41 +1,71 @@
-import sys
+"""Inspect aggregate text statistics from a Telegram HTML export."""
+import argparse
 import re
 from collections import Counter
+from html.parser import HTMLParser
+from pathlib import Path
 
-sys.stdout.reconfigure(encoding='utf-8')
 
-with open('SelfMessages_6412968509_20260528_1623.html', 'r', encoding='utf-8', errors='ignore') as f:
-    html = f.read()
+class MessageStats(HTMLParser):
+    def __init__(self, top):
+        super().__init__()
+        self.top = top
+        self.parts = None
+        self.total = 0
+        self.nonempty = 0
+        self.words = 0
+        self.frequency = Counter()
 
-texts = re.findall(r'<td class="c-text">(.*?)</td>', html)
-print(f'Total messages extracted: {len(texts)}')
+    def handle_starttag(self, tag, attrs):
+        if tag == "td" and "c-text" in (dict(attrs).get("class") or "").split():
+            self.parts = []
+        elif tag == "br" and self.parts is not None:
+            self.parts.append(" ")
 
-# Clean html entities
-clean_texts = []
-for t in texts:
-    t = t.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-    t = t.strip()
-    if t:
-        clean_texts.append(t)
+    def handle_data(self, data):
+        if self.parts is not None:
+            self.parts.append(data)
 
-print(f'Clean messages: {len(clean_texts)}')
+    def handle_endtag(self, tag):
+        if tag != "td" or self.parts is None:
+            return
+        text = "".join(self.parts).strip()
+        self.parts = None
+        self.total += 1
+        if text:
+            self.nonempty += 1
+            self.words += len(text.split())
+            if self.top:
+                self.frequency.update(re.findall(r"[^\W\d_]{3,}", text.casefold()))
 
-lengths = [len(t.split()) for t in clean_texts]
-avg_len = sum(lengths) / len(lengths) if lengths else 0
-print(f'Average words: {avg_len:.2f}')
 
-# Word frequencies
-words = []
-for t in clean_texts:
-    for w in re.findall(r'[a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ]+', t.lower()):
-        if len(w) > 2:
-            words.append(w)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("export", type=Path, nargs="?", help="Path to the HTML export")
+    parser.add_argument("--top", type=int, default=0, help="Show this many frequent words")
+    args = parser.parse_args()
+    if args.top < 0:
+        parser.error("--top must be non-negative")
+    if args.export is None:
+        candidates = list(Path.cwd().glob("SelfMessages_*.html"))
+        if len(candidates) != 1:
+            parser.error("Provide the path to one HTML export")
+        args.export = candidates[0]
 
-c = Counter(words)
-print('\nTop 40 words:')
-for w, cnt in c.most_common(40):
-    print(f'{w}: {cnt}')
+    stats = MessageStats(args.top)
+    try:
+        with args.export.open(encoding="utf-8-sig", errors="replace") as export:
+            for block in iter(lambda: export.read(65536), ""):
+                stats.feed(block)
+        stats.close()
+    except OSError as exc:
+        parser.exit(1, f"Could not read the export: {exc.strerror}\n")
 
-print('\nSample 30 messages:')
-for t in clean_texts[200:230]:
-    print('>', t)
+    average = stats.words / stats.nonempty if stats.nonempty else 0
+    print(f"Messages: {stats.total}\nNon-empty messages: {stats.nonempty}\nAverage words: {average:.2f}")
+    for word, count in stats.frequency.most_common(args.top):
+        print(f"{word}: {count}")
+
+
+if __name__ == "__main__":
+    main()

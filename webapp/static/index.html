@@ -1,835 +1,212 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>AI-Двойник: Панель Управления</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <style>
-        :root {
-            --bg-color: #0d1117;
-            --card-bg: #161b22;
-            --card-border: #30363d;
-            --accent: #58a6ff;
-            --accent-gradient: linear-gradient(135deg, #238636, #2ea043);
-            --danger: #f85149;
-            --warning: #d29922;
-            --text-main: #f0f6fc;
-            --text-muted: #8b949e;
-            --input-bg: #0b0e14;
-        }
-
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            -webkit-tap-highlight-color: transparent;
-        }
-
-        body {
-            background-color: var(--bg-color);
-            color: var(--text-main);
-            padding: 14px;
-            padding-bottom: 80px;
-        }
-
-        .header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 16px;
-            padding-bottom: 12px;
-            border-bottom: 1px solid var(--card-border);
-        }
-
-        .header h1 {
-            font-size: 18px;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .status-badge {
-            font-size: 11px;
-            font-weight: 600;
-            padding: 4px 10px;
-            border-radius: 12px;
-            background: rgba(46, 160, 67, 0.2);
-            color: #3fb950;
-            border: 1px solid rgba(46, 160, 67, 0.4);
-        }
-
-        .status-badge.paused {
-            background: rgba(248, 81, 73, 0.2);
-            color: var(--danger);
-            border-color: rgba(248, 81, 73, 0.4);
-        }
-
-        /* Navigation Tabs */
-        .tabs {
-            display: flex;
-            gap: 6px;
-            margin-bottom: 16px;
-            overflow-x: auto;
-            scrollbar-width: none;
-        }
-        .tabs::-webkit-scrollbar { display: none; }
-
-        .tab-btn {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            color: var(--text-muted);
-            padding: 8px 14px;
-            border-radius: 8px;
-            font-size: 13px;
-            font-weight: 500;
-            white-space: nowrap;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .tab-btn.active {
-            background: #1f6feb;
-            color: #fff;
-            border-color: #58a6ff;
-        }
-
-        .tab-content {
-            display: none;
-        }
-        .tab-content.active {
-            display: block;
-        }
-
-        /* Card container */
-        .card {
-            background: var(--card-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 12px;
-            padding: 14px;
-            margin-bottom: 14px;
-        }
-
-        .card-title {
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-main);
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        /* Form Controls */
-        .form-group {
-            margin-bottom: 14px;
-        }
-
-        .form-group:last-child {
-            margin-bottom: 0;
-        }
-
-        label {
-            display: block;
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-bottom: 6px;
-            font-weight: 500;
-        }
-
-        select, input[type="text"], input[type="password"], input[type="number"], textarea {
-            width: 100%;
-            background: var(--input-bg);
-            border: 1px solid var(--card-border);
-            color: var(--text-main);
-            padding: 10px 12px;
-            border-radius: 8px;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-
-        select:focus, input:focus, textarea:focus {
-            border-color: var(--accent);
-        }
-
-        .key-row {
-            display: flex;
-            gap: 6px;
-            align-items: center;
-        }
-
-        .toggle-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }
-        .toggle-row:last-child { border-bottom: none; }
-
-        .toggle-info h4 {
-            font-size: 13px;
-            font-weight: 500;
-        }
-        .toggle-info p {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-top: 2px;
-        }
-
-        /* Switch */
-        .switch {
-            position: relative;
-            display: inline-block;
-            width: 44px;
-            height: 24px;
-            flex-shrink: 0;
-        }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background-color: #21262d;
-            border: 1px solid var(--card-border);
-            transition: .3s;
-            border-radius: 24px;
-        }
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 18px;
-            width: 18px;
-            left: 2px;
-            bottom: 2px;
-            background-color: #8b949e;
-            transition: .3s;
-            border-radius: 50%;
-        }
-        input:checked + .slider {
-            background-color: #238636;
-            border-color: #2ea043;
-        }
-        input:checked + .slider:before {
-            transform: translateX(20px);
-            background-color: #ffffff;
-        }
-
-        /* Buttons */
-        .btn-primary {
-            width: 100%;
-            background: #238636;
-            color: #ffffff;
-            border: none;
-            padding: 12px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.2s;
-            margin-top: 10px;
-        }
-        .btn-primary:active { background: #2ea043; }
-
-        /* Stats Grid */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
-        .stat-box {
-            background: var(--input-bg);
-            border: 1px solid var(--card-border);
-            border-radius: 8px;
-            padding: 12px;
-            text-align: center;
-        }
-        .stat-val {
-            font-size: 22px;
-            font-weight: 700;
-            color: var(--accent);
-        }
-        .stat-lbl {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-top: 4px;
-        }
-
-        /* Chat Testing Window */
-        .chat-sim {
-            background: #0b0e14;
-            border: 1px solid var(--card-border);
-            border-radius: 8px;
-            padding: 12px;
-            min-height: 160px;
-            max-height: 250px;
-            overflow-y: auto;
-            margin-bottom: 10px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        .msg-bubble {
-            max-width: 80%;
-            padding: 8px 12px;
-            border-radius: 12px;
-            font-size: 13px;
-            line-height: 1.4;
-        }
-        .msg-user {
-            background: #1f6feb;
-            color: white;
-            align-self: flex-end;
-            border-bottom-right-radius: 2px;
-        }
-        .msg-bot {
-            background: #21262d;
-            color: #e6edf3;
-            align-self: flex-start;
-            border-bottom-left-radius: 2px;
-            border: 1px solid var(--card-border);
-        }
-        .typing-indicator {
-            font-size: 11px;
-            color: var(--text-muted);
-            font-style: italic;
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #238636;
-            color: white;
-            padding: 10px 18px;
-            border-radius: 20px;
-            font-size: 13px;
-            font-weight: 500;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.3s;
-            z-index: 1000;
-        }
-        .toast.show { opacity: 1; }
-    </style>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0b1117">
+    <title>Пульт бота · Telegram Business</title>
+    <link rel="stylesheet" href="/static/panel.css">
+    <script src="https://telegram.org/js/telegram-web-app.js?62" defer></script>
+    <script src="/static/panel.js" defer></script>
 </head>
 <body>
+    <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <symbol id="i-signal" viewBox="0 0 24 24"><path d="M2 12h4l3-6 4 12 3-6h6"/></symbol>
+        <symbol id="i-model" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3m6-3v3M9 19v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></symbol>
+        <symbol id="i-controls" viewBox="0 0 24 24"><path d="M5 3v8m0 4v6M12 3v3m0 4v11m7-18v11m0 4v3M2 11h6m1-5h6m1 8h6"/></symbol>
+        <symbol id="i-chat" viewBox="0 0 24 24"><path d="M20 16a2 2 0 0 1-2 2H9l-5 3V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2zM8 8h8m-8 5h5"/></symbol>
+        <symbol id="i-sim" viewBox="0 0 24 24"><path d="M9 3h6m-5 0v8l-5 7a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-7V3M8 15h8"/></symbol>
+        <symbol id="i-stats" viewBox="0 0 24 24"><path d="M3 3v18h18M8 16v-4m5 4V7m5 9V4"/></symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15m-6-6 6 6-6 6"/></symbol>
+        <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3"/></symbol>
+    </svg>
 
-    <div class="header">
-        <h1>🎮 AI-Андрей <span>(11 лет)</span></h1>
-        <div id="statusBadge" class="status-badge">АКТИВЕН</div>
-    </div>
-
-    <!-- Navigation Tabs -->
-    <div class="tabs">
-        <button class="tab-btn active" onclick="switchTab('tab-neural')">🤖 Нейросеть</button>
-        <button class="tab-btn" onclick="switchTab('tab-behavior')">⚡ Поведение</button>
-        <button class="tab-btn" onclick="switchTab('tab-chats')">💬 Чаты</button>
-        <button class="tab-btn" onclick="switchTab('tab-persona')">🎯 Личность & Тест</button>
-        <button class="tab-btn" onclick="switchTab('tab-stats')">📊 Статистика</button>
-    </div>
-
-    <!-- TAB 1: NEURAL MODEL & KEYS -->
-    <div id="tab-neural" class="tab-content active">
-        <div class="card">
-            <div class="card-title">🧠 Выбор активной нейросети</div>
-            <div class="form-group">
-                <label>Модель для генерации ответов:</label>
-                <select id="activeModelSelect" onchange="onModelChange()">
-                    <!-- Populated dynamically -->
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Температура креативности (<span id="tempValue">0.75</span>):</label>
-                <input type="range" id="tempInput" min="0.1" max="1.0" step="0.05" value="0.75" oninput="document.getElementById('tempValue').innerText = this.value">
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-title">🔑 Хранилище API Ключей</div>
-            
-            <div class="form-group">
-                <label>Google Gemini API Key:</label>
-                <input type="password" id="key_gemini" placeholder="AIzaSy...">
-            </div>
-
-            <div class="form-group">
-                <label>OpenAI API Key (GPT-4o):</label>
-                <input type="password" id="key_openai" placeholder="sk-proj-...">
-            </div>
-
-            <div class="form-group">
-                <label>DeepSeek API Key (V3 / R1):</label>
-                <input type="password" id="key_deepseek" placeholder="sk-...">
-            </div>
-
-            <div class="form-group">
-                <label>Anthropic API Key (Claude):</label>
-                <input type="password" id="key_anthropic" placeholder="sk-ant-...">
-            </div>
-
-            <div class="form-group">
-                <label>Groq API Key (Llama 3):</label>
-                <input type="password" id="key_groq" placeholder="gsk_...">
-            </div>
-
-            <div class="form-group">
-                <label>OpenRouter API Key:</label>
-                <input type="password" id="key_openrouter" placeholder="sk-or-...">
-            </div>
-
-            <button class="btn-primary" onclick="saveSettings()">💾 Сохранить стандартные ключи</button>
-        </div>
-
-        <div class="card">
-            <div class="card-title">⚙️ Кастомный провайдер / Модель (OpenAI-compatible)</div>
-            <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">
-                Подходит для любых сторонних API (Ollama, Together, vLLM, OpenRouter, Mistral, Qwen, Any Proxy).
-            </p>
-
-            <div class="form-group">
-                <label>Base URL API (эндпоинт):</label>
-                <input type="text" id="customBaseUrl" placeholder="https://api.openai.com/v1 или https://openrouter.ai/api/v1">
-            </div>
-
-            <div class="form-group">
-                <label>Название модели (Model ID):</label>
-                <input type="text" id="customModelName" placeholder="например: deepseek-ai/DeepSeek-V3 или gpt-4.5-turbo">
-            </div>
-
-            <div class="form-group">
-                <label>Кастомный API Key (если требуется):</label>
-                <input type="password" id="customApiKey" placeholder="sk-...">
-            </div>
-
-            <button class="btn-primary" style="background:#1f6feb;" onclick="saveCustomSettings()">💾 Сохранить кастомного провайдера</button>
-        </div>
-    </div>
-
-    <!-- TAB 2: BEHAVIOR & TIMINGS -->
-    <div id="tab-behavior" class="tab-content">
-        <div class="card">
-            <div class="card-title">⚡ Имитация человека & Тайминги</div>
-
-            <div class="toggle-row">
-                <div class="toggle-info">
-                    <h4>Глобальная пауза бота</h4>
-                    <p>Отключить автоответ во всех чатах</p>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" id="pauseToggle" onchange="saveSettings()">
-                    <span class="slider"></span>
-                </label>
-            </div>
-
-            <div class="toggle-row">
-                <div class="toggle-info">
-                    <h4>Симуляция "Печатает..."</h4>
-                    <p>Показывать статус typing перед отправкой</p>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" id="typingToggle" checked>
-                    <span class="slider"></span>
-                </label>
-            </div>
-
-            <div class="toggle-row">
-                <div class="toggle-info">
-                    <h4>Дробление сообщений</h4>
-                    <p>Отправлять 1-3 коротких фразы вместо простыни</p>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" id="splitToggle" checked>
-                    <span class="slider"></span>
-                </label>
-            </div>
-
-            <div class="toggle-row">
-                <div class="toggle-info">
-                    <h4>Фильтр безопасности</h4>
-                    <p>Тревога при словах: деньги, пароль, полиция</p>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" id="sensitiveToggle" checked>
-                    <span class="slider"></span>
-                </label>
-            </div>
-
-            <div class="form-group" style="margin-top: 14px;">
-                <label>Задержка ответа человека (секунды: мин - макс):</label>
-                <div style="display: flex; gap: 8px;">
-                    <input type="number" id="minDelayInput" value="3" min="1" max="60" style="width: 50%;">
-                    <input type="number" id="maxDelayInput" value="8" min="2" max="120" style="width: 50%;">
+    <div class="shell">
+        <header class="masthead">
+            <div class="brand">
+                <div class="brand-mark"><svg class="icon"><use href="#i-signal"></use></svg></div>
+                <div>
+                    <div class="eyebrow">Telegram Business</div>
+                    <h1>Пульт бота</h1>
                 </div>
             </div>
+            <span class="access-label" id="accessLabel">Вход</span>
+        </header>
 
-            <div class="form-group">
-                <label>Human Takeover (пауза если друг сам написал, мин):</label>
-                <input type="number" id="takeoverInput" value="15" min="1" max="180">
-            </div>
+        <main>
+            <section class="gate panel" id="gate" aria-labelledby="gateTitle">
+                <div class="gate-icon"><svg class="icon"><use href="#i-lock"></use></svg></div>
+                <div class="eyebrow">Защищённая панель</div>
+                <h2 id="gateTitle">Проверяем доступ</h2>
+                <p id="gateMessage" role="status">Подключаемся к серверу…</p>
+                <form id="localForm" hidden>
+                    <label for="localToken">Локальный токен доступа</label>
+                    <input id="localToken" type="password" autocomplete="off" required spellcheck="false">
+                    <button class="button button-primary" type="submit">Войти <svg class="icon"><use href="#i-arrow"></use></svg></button>
+                </form>
+                <button class="button" id="retryAccess" type="button" hidden>Повторить подключение</button>
+            </section>
 
-            <button class="btn-primary" onclick="saveSettings()">💾 Сохранить поведение</button>
-        </div>
-    </div>
-
-    <!-- TAB 3: CHATS WHITELIST -->
-    <div id="tab-chats" class="tab-content">
-        <div class="card">
-            <div class="card-title">💬 Управление чатами переписки</div>
-            <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">
-                Включай или отключай автоответ бота для каждого диалога по отдельности.
-            </p>
-            <input type="text" id="chatSearch" placeholder="🔍 Поиск по названию..." oninput="filterChats()" style="margin-bottom: 12px;">
-            <div id="chatsListContainer" style="display: flex; flex-direction: column; gap: 8px;">
-                <!-- Chats list will be rendered here -->
-            </div>
-        </div>
-    </div>
-
-    <!-- TAB 4: PERSONA & SIMULATOR -->
-    <div id="tab-persona" class="tab-content">
-        <div class="card">
-            <div class="card-title">🎯 Симулятор переписки с Андреем</div>
-            <div class="chat-sim" id="chatSimBox">
-                <div class="msg-bubble msg-bot">че надо го в бравл</div>
-            </div>
-            <div style="display: flex; gap: 6px;">
-                <input type="text" id="simInput" placeholder="Напиши что-то Андрею..." onkeydown="if(event.key==='Enter') sendSimMessage()">
-                <button class="btn-primary" style="width: auto; margin-top: 0; padding: 0 16px;" onclick="sendSimMessage()">➤</button>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-title">📝 Системный промпт характера</div>
-            <div class="form-group">
-                <label>Дополнительные правила или фразочки Андрея:</label>
-                <textarea id="customPromptInput" rows="5" placeholder="Оставьте пустым для базового профиля (Brawl Stars, Standoff, 11 лет)..."></textarea>
-            </div>
-            <button class="btn-primary" onclick="saveSettings()">💾 Обновить характер</button>
-        </div>
-    </div>
-
-    <!-- TAB 5: STATS -->
-    <div id="tab-stats" class="tab-content">
-        <div class="card">
-            <div class="card-title">📊 Оперативные показатели</div>
-            <div class="stats-grid">
-                <div class="stat-box">
-                    <div class="stat-val" id="statSent">0</div>
-                    <div class="stat-lbl">ОТПРАВЛЕНО СООБЩЕНИЙ</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-val" id="statReceived">0</div>
-                    <div class="stat-lbl">ПРИНЯТО СООБЩЕНИЙ</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-val" id="statChats">0</div>
-                    <div class="stat-lbl">ВСЕГО ЧАТОВ</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-val" id="statActiveChats">0</div>
-                    <div class="stat-lbl">АКТИВНЫХ ЧАТОВ</div>
-                </div>
-            </div>
-            <div style="margin-top: 14px; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
-                • Master Admin ID: <code>7150170715</code><br>
-                • Режим: Telegram Business Webhooks<br>
-                • Анализ: База из 16,492 сообщений и досье
-            </div>
-        </div>
-    </div>
-
-    <div class="toast" id="toastBox">Настройки сохранены!</div>
-
-    <script>
-        // Init Telegram WebApp
-        if (window.Telegram && window.Telegram.WebApp) {
-            window.Telegram.WebApp.ready();
-            window.Telegram.WebApp.expand();
-        }
-
-        let allChats = [];
-
-        function switchTab(tabId) {
-            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-            
-            event.target.classList.add('active');
-            document.getElementById(tabId).classList.add('active');
-
-            if (tabId === 'tab-chats') loadChats();
-            if (tabId === 'tab-stats') loadStats();
-        }
-
-        function showToast(msg) {
-            const t = document.getElementById('toastBox');
-            t.innerText = msg;
-            t.classList.add('show');
-            setTimeout(() => t.classList.remove('show'), 2500);
-        }
-
-        async function loadSettings() {
-            try {
-                const res = await fetch('/api/settings');
-                const data = await res.json();
-                const s = data.settings;
-                
-                // Populate models
-                const sel = document.getElementById('activeModelSelect');
-                sel.innerHTML = '';
-                data.models.forEach(m => {
-                    const opt = document.createElement('option');
-                    opt.value = m.id;
-                    opt.innerText = `${m.name}`;
-                    if (m.id === s.active_model) opt.selected = true;
-                    sel.appendChild(opt);
-                });
-
-                // Set values
-                document.getElementById('tempInput').value = s.temperature || '0.75';
-                document.getElementById('tempValue').innerText = s.temperature || '0.75';
-                document.getElementById('minDelayInput').value = s.min_delay || '3';
-                document.getElementById('maxDelayInput').value = s.max_delay || '8';
-                document.getElementById('takeoverInput').value = s.human_takeover_minutes || '15';
-
-                document.getElementById('pauseToggle').checked = s.is_paused === '1';
-                document.getElementById('typingToggle').checked = s.simulate_typing === '1';
-                document.getElementById('splitToggle').checked = s.split_messages === '1';
-                document.getElementById('sensitiveToggle').checked = s.filter_sensitive === '1';
-                document.getElementById('customPromptInput').value = s.custom_prompt || '';
-                document.getElementById('customBaseUrl').value = s.custom_base_url || '';
-                document.getElementById('customModelName').value = s.custom_model_name || '';
-                if (s.custom_api_key_masked) {
-                    document.getElementById('customApiKey').placeholder = `Активен (${s.custom_api_key_masked})`;
-                }
-
-                // API Key placeholders
-                ['gemini', 'openai', 'deepseek', 'anthropic', 'groq', 'openrouter'].forEach(prov => {
-                    const el = document.getElementById(`key_${prov}`);
-                    if (s[`${prov}_api_key_masked`]) {
-                        el.placeholder = `Активен (${s[`${prov}_api_key_masked`]})`;
-                    }
-                });
-
-                updateStatusBadge(s.is_paused === '1');
-            } catch (e) {
-                console.error("Error loading settings:", e);
-            }
-        }
-
-        function updateStatusBadge(isPaused) {
-            const badge = document.getElementById('statusBadge');
-            if (isPaused) {
-                badge.className = 'status-badge paused';
-                badge.innerText = 'НА ПАУЗЕ';
-            } else {
-                badge.className = 'status-badge';
-                badge.innerText = 'АКТИВЕН';
-            }
-        }
-
-        async function saveSettings() {
-            const payload = {
-                active_model: document.getElementById('activeModelSelect').value,
-                temperature: document.getElementById('tempInput').value,
-                min_delay: document.getElementById('minDelayInput').value,
-                max_delay: document.getElementById('maxDelayInput').value,
-                human_takeover_minutes: document.getElementById('takeoverInput').value,
-                is_paused: document.getElementById('pauseToggle').checked ? '1' : '0',
-                simulate_typing: document.getElementById('typingToggle').checked ? '1' : '0',
-                split_messages: document.getElementById('splitToggle').checked ? '1' : '0',
-                filter_sensitive: document.getElementById('sensitiveToggle').checked ? '1' : '0',
-                custom_prompt: document.getElementById('customPromptInput').value
-            };
-
-            // Add keys only if user typed new one
-            ['gemini', 'openai', 'deepseek', 'anthropic', 'groq', 'openrouter'].forEach(prov => {
-                const val = document.getElementById(`key_${prov}`).value.trim();
-                if (val && !val.includes('****')) {
-                    payload[`${prov}_api_key`] = val;
-                }
-            });
-
-            try {
-                const res = await fetch('/api/settings', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                });
-                const data = await res.json();
-                showToast(data.message || 'Настройки сохранены!');
-                updateStatusBadge(payload.is_paused === '1');
-            } catch (e) {
-                alert("Ошибка сохранения: " + e);
-            }
-        }
-
-        async function saveCustomSettings() {
-            const bUrl = document.getElementById('customBaseUrl').value.trim();
-            const mName = document.getElementById('customModelName').value.trim();
-            const cKey = document.getElementById('customApiKey').value.trim();
-
-            const payload = {
-                active_model: 'custom-model',
-                active_provider: 'custom',
-                custom_base_url: bUrl,
-                custom_model_name: mName
-            };
-            if (cKey && !cKey.includes('****')) {
-                payload.custom_api_key = cKey;
-            }
-
-            try {
-                const res = await fetch('/api/settings', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                });
-                const data = await res.json();
-                showToast('Кастомный провайдер сохранен и активирован!');
-                document.getElementById('activeModelSelect').value = 'custom-model';
-            } catch (e) {
-                alert("Ошибка сохранения: " + e);
-            }
-        }
-
-        async function loadChats() {
-            try {
-                const res = await fetch('/api/chats');
-                const data = await res.json();
-                allChats = data.chats || [];
-                renderChats(allChats);
-            } catch (e) {
-                console.error("Error loading chats:", e);
-            }
-        }
-
-        function renderChats(chats) {
-            const container = document.getElementById('chatsListContainer');
-            if (chats.length === 0) {
-                container.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px;">Пока нет диалогов. Когда другу напишут в Telegram, чат появится здесь.</div>';
-                return;
-            }
-            container.innerHTML = '';
-            chats.forEach(c => {
-                const row = document.createElement('div');
-                row.className = 'toggle-row';
-                row.innerHTML = `
-                    <div class="toggle-info">
-                        <h4>${c.chat_title || 'Личный чат'}</h4>
-                        <p>${c.username ? '@' + c.username : 'ID: ' + c.chat_id}</p>
+            <div id="dashboard" hidden>
+                <section class="overview" aria-labelledby="overviewTitle" data-state="unknown">
+                    <div class="overview-graphic" aria-hidden="true">
+                        <svg viewBox="0 0 210 104" fill="none">
+                            <path class="diagram-grid" d="M7 26h196M7 52h196M7 78h196M29 5v94M67 5v94m38-94v94m38-94v94m38-94v94"/>
+                            <path class="diagram-line" d="M7 52h35l13-16 14 32 17-50 20 67 15-33h20l12-16 12 16h38"/>
+                            <circle cx="203" cy="52" r="4"/>
+                        </svg>
                     </div>
-                    <label class="switch">
-                        <input type="checkbox" ${c.is_enabled ? 'checked' : ''} onchange="toggleChat(${c.chat_id}, this.checked)">
-                        <span class="slider"></span>
-                    </label>
-                `;
-                container.appendChild(row);
-            });
-        }
+                    <div class="overview-content">
+                        <div class="overview-meta">
+                            <span class="eyebrow">Режим работы</span>
+                            <span class="status-pill"><span class="status-dot" aria-hidden="true"></span><span id="replyStatus" role="status">Загрузка</span></span>
+                        </div>
+                        <h2 id="overviewTitle">Автоответы</h2>
+                        <p id="replySummary"></p>
+                        <div class="overview-actions">
+                            <button class="button button-primary" id="pauseButton" type="button" disabled>Поставить на паузу</button>
+                            <button class="button button-link" id="openChats" type="button">К чатам <svg class="icon"><use href="#i-arrow"></use></svg></button>
+                        </div>
+                        <p class="feedback" id="pauseFeedback" role="status" hidden></p>
+                    </div>
+                </section>
 
-        function filterChats() {
-            const q = document.getElementById('chatSearch').value.toLowerCase();
-            const filtered = allChats.filter(c => 
-                (c.chat_title && c.chat_title.toLowerCase().includes(q)) || 
-                (c.username && c.username.toLowerCase().includes(q))
-            );
-            renderChats(filtered);
-        }
+                <nav class="tabs" role="tablist" aria-label="Разделы панели">
+                    <button class="tab" id="tab-model" type="button" role="tab" aria-selected="true" aria-controls="model"><svg class="icon"><use href="#i-model"></use></svg><span>Модель</span></button>
+                    <button class="tab" id="tab-behavior" type="button" role="tab" aria-selected="false" aria-controls="behavior" tabindex="-1"><svg class="icon"><use href="#i-controls"></use></svg><span>Поведение</span></button>
+                    <button class="tab" id="tab-chats" type="button" role="tab" aria-selected="false" aria-controls="chats" tabindex="-1"><svg class="icon"><use href="#i-chat"></use></svg><span>Чаты</span></button>
+                    <button class="tab" id="tab-preview" type="button" role="tab" aria-selected="false" aria-controls="preview" tabindex="-1"><svg class="icon"><use href="#i-sim"></use></svg><span>Тест</span></button>
+                    <button class="tab" id="tab-stats" type="button" role="tab" aria-selected="false" aria-controls="stats" tabindex="-1"><svg class="icon"><use href="#i-stats"></use></svg><span>Статистика</span></button>
+                </nav>
 
-        async function toggleChat(chatId, isEnabled) {
-            try {
-                await fetch('/api/chats/toggle', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({chat_id: chatId, is_enabled: isEnabled})
-                });
-                showToast(isEnabled ? 'Чат активирован' : 'Чат заглушен');
-            } catch (e) {
-                alert("Ошибка: " + e);
-            }
-        }
+                <section class="tab-panel" id="model" role="tabpanel" aria-labelledby="tab-model" tabindex="0">
+                    <div class="section-heading"><span class="section-number">01</span><h2>Модель и провайдеры</h2></div>
+                    <div class="settings-grid">
+                        <form class="panel" id="modelForm">
+                            <h3>Модель ответов</h3>
+                            <div class="field">
+                                <label for="activeModel">Активная модель</label>
+                                <select id="activeModel" required></select>
+                            </div>
+                            <div class="field">
+                                <div class="label-row"><label for="temperature">Температура</label><output id="temperatureValue" for="temperature">0,75</output></div>
+                                <input id="temperature" type="range" min="0" max="1" step="0.05" value="0.75">
+                                <div class="range-labels" aria-hidden="true"><span>Сдержанно</span><span>Свободно</span></div>
+                            </div>
+                            <button class="button button-primary" type="submit">Применить модель</button>
+                            <p class="feedback" id="modelFeedback" role="status" hidden></p>
+                        </form>
 
-        async function loadStats() {
-            try {
-                const res = await fetch('/api/stats');
-                const data = await res.json();
-                document.getElementById('statSent').innerText = data.stats.total_sent;
-                document.getElementById('statReceived').innerText = data.stats.total_received;
-                document.getElementById('statChats').innerText = data.stats.total_chats;
-                document.getElementById('statActiveChats').innerText = data.stats.active_chats;
-            } catch (e) {
-                console.error("Error loading stats:", e);
-            }
-        }
+                        <form class="panel" id="customForm">
+                            <h3>Свой провайдер</h3>
+                            <p class="muted">Подключение через OpenAI совместимый API. Для других доменов добавьте адрес в <code>CUSTOM_PROVIDER_ORIGINS</code> на сервере.</p>
+                            <div class="field">
+                                <label for="customBaseUrl">Base URL</label>
+                                <input id="customBaseUrl" type="url" placeholder="https://openrouter.ai/api/v1" maxlength="4096" required spellcheck="false" autocapitalize="none">
+                            </div>
+                            <div class="field">
+                                <label for="customModelName">ID модели</label>
+                                <input id="customModelName" type="text" placeholder="provider/model" maxlength="256" required spellcheck="false" autocapitalize="none">
+                            </div>
+                            <div class="field">
+                                <label for="customApiKey">Ключ <span class="key-indicator" id="customKeyStatus"></span></label>
+                                <input id="customApiKey" type="password" placeholder="Если нужен для API" maxlength="2048" autocomplete="off" spellcheck="false">
+                            </div>
+                            <button class="button" type="submit">Сохранить и выбрать</button>
+                            <p class="feedback" id="customFeedback" role="status" hidden></p>
+                        </form>
 
-        async function sendSimMessage() {
-            const inp = document.getElementById('simInput');
-            const txt = inp.value.trim();
-            if (!txt) return;
+                        <details class="panel keys-panel">
+                            <summary><span><strong>Ключи провайдеров</strong><small>Gemini, OpenAI, DeepSeek, Anthropic, Groq, OpenRouter</small></span><span class="summary-mark" aria-hidden="true"></span></summary>
+                            <form id="keysForm">
+                                <p class="muted">Введите только те ключи, которые хотите обновить.</p>
+                                <div class="field-grid" id="providerKeys"></div>
+                                <button class="button" type="submit">Сохранить ключи</button>
+                                <p class="feedback" id="keysFeedback" role="status" hidden></p>
+                            </form>
+                        </details>
+                    </div>
+                </section>
 
-            const box = document.getElementById('chatSimBox');
-            
-            // Add user bubble
-            const uBubble = document.createElement('div');
-            uBubble.className = 'msg-bubble msg-user';
-            uBubble.innerText = txt;
-            box.appendChild(uBubble);
-            inp.value = '';
+                <section class="tab-panel" id="behavior" role="tabpanel" aria-labelledby="tab-behavior" tabindex="0" hidden>
+                    <div class="section-heading"><span class="section-number">02</span><h2>Поведение</h2></div>
+                    <form class="panel" id="behaviorForm">
+                        <h3>Правила автоответов</h3>
+                        <div class="rule-list">
+                            <label class="rule">
+                                <span><strong>Индикатор набора</strong><small>Показывать «печатает…» перед отправкой</small></span>
+                                <input class="switch" type="checkbox" id="typing" role="switch">
+                            </label>
+                            <label class="rule">
+                                <span><strong>Короткие сообщения</strong><small>Делить ответ на отдельные реплики</small></span>
+                                <input class="switch" type="checkbox" id="split" role="switch">
+                            </label>
+                        </div>
+                        <div class="field-grid delay-grid">
+                            <div class="field"><label for="minDelay">Мин. задержка, с</label><input id="minDelay" type="number" min="0" max="60" step="any" required></div>
+                            <div class="field"><label for="maxDelay">Макс. задержка, с</label><input id="maxDelay" type="number" min="0" max="60" step="any" required></div>
+                            <div class="field"><label for="takeover">Пауза после ответа владельца, мин</label><input id="takeover" type="number" min="0" max="1440" step="any" required></div>
+                        </div>
+                        <button class="button button-primary" type="submit">Сохранить правила</button>
+                        <p class="feedback" id="behaviorFeedback" role="status" hidden></p>
+                    </form>
+                </section>
 
-            // Typing indicator
-            const typing = document.createElement('div');
-            typing.className = 'typing-indicator';
-            typing.innerText = 'Андрей печатает...';
-            box.appendChild(typing);
-            box.scrollTop = box.scrollHeight;
+                <section class="tab-panel" id="chats" role="tabpanel" aria-labelledby="tab-chats" tabindex="0" hidden>
+                    <div class="section-heading"><span class="section-number">03</span><h2>Чаты</h2></div>
+                    <div class="panel">
+                        <div class="panel-heading"><h3>Автоответы по чатам</h3><button class="button button-small" id="refreshChats" type="button">Обновить</button></div>
+                        <p class="muted">В новых чатах, разрешённых в настройках Telegram, автоответы включены. Здесь их можно отключить по отдельности.</p>
+                        <div class="field"><label for="chatSearch">Поиск</label><input id="chatSearch" type="search" placeholder="Имя, @username или ID" autocomplete="off"></div>
+                        <p class="feedback" id="chatFeedback" role="status" hidden></p>
+                        <ul id="chatList" class="chat-list"></ul>
+                    </div>
+                </section>
 
-            try {
-                const res = await fetch('/api/test', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({message: txt})
-                });
-                const data = await res.json();
-                typing.remove();
+                <section class="tab-panel" id="preview" role="tabpanel" aria-labelledby="tab-preview" tabindex="0" hidden>
+                    <div class="section-heading"><span class="section-number">04</span><h2>Тест ответа</h2></div>
+                    <div class="settings-grid">
+                        <form class="panel" id="previewForm">
+                            <h3>Симулятор</h3>
+                            <p class="muted">Каждый запрос отдельный. Ответ появится только в этом окне.</p>
+                            <div id="previewLog" class="preview-log" role="log" aria-label="Результаты теста" tabindex="0"><p class="muted" id="previewEmpty">Здесь появится ответ модели.</p></div>
+                            <div class="field">
+                                <label for="previewMessage">Тестовое сообщение</label>
+                                <textarea id="previewMessage" rows="2" placeholder="Введите сообщение" maxlength="4096" required></textarea>
+                            </div>
+                            <button class="button button-primary" type="submit">Получить ответ</button>
+                            <p class="feedback" id="previewFeedback" role="status" hidden></p>
+                        </form>
+                        <details class="panel prompt-panel">
+                            <summary><span><strong>Инструкции для модели</strong><small>Настройте стиль и содержание ответов</small></span><span class="summary-mark" aria-hidden="true"></span></summary>
+                            <form id="promptForm">
+                                <div class="field">
+                                    <label for="customPrompt">Свой промпт</label>
+                                    <textarea id="customPrompt" rows="6" maxlength="4000" placeholder="Оставьте пустым для стандартных инструкций"></textarea>
+                                </div>
+                                <button class="button" type="submit">Сохранить промпт</button>
+                                <p class="feedback" id="promptFeedback" role="status" hidden></p>
+                            </form>
+                        </details>
+                    </div>
+                </section>
 
-                if (data.chunks && data.chunks.length > 0) {
-                    data.chunks.forEach((chunk, idx) => {
-                        setTimeout(() => {
-                            const bBubble = document.createElement('div');
-                            bBubble.className = 'msg-bubble msg-bot';
-                            bBubble.innerText = chunk;
-                            box.appendChild(bBubble);
-                            box.scrollTop = box.scrollHeight;
-                        }, idx * 600);
-                    });
-                } else {
-                    const bBubble = document.createElement('div');
-                    bBubble.className = 'msg-bubble msg-bot';
-                    bBubble.innerText = data.raw || 'пон';
-                    box.appendChild(bBubble);
-                }
-            } catch (e) {
-                typing.remove();
-                const errBubble = document.createElement('div');
-                errBubble.className = 'msg-bubble msg-bot';
-                errBubble.innerText = 'Ошибка: проверьте API ключ в первой вкладке';
-                box.appendChild(errBubble);
-            }
-            box.scrollTop = box.scrollHeight;
-        }
-
-        function onModelChange() {
-            saveSettings();
-        }
-
-        // Initial load
-        loadSettings();
-    </script>
+                <section class="tab-panel" id="stats" role="tabpanel" aria-labelledby="tab-stats" tabindex="0" hidden>
+                    <div class="section-heading"><span class="section-number">05</span><h2>Статистика</h2></div>
+                    <div class="panel">
+                        <div class="panel-heading"><h3>Сводка</h3><button class="button button-small" id="refreshStats" type="button">Обновить</button></div>
+                        <p class="feedback" id="statsFeedback" role="status" hidden></p>
+                        <dl class="stats-grid">
+                            <div><dt>Ответы бота</dt><dd id="totalSent">—</dd></div>
+                            <div><dt>Входящие</dt><dd id="totalReceived">—</dd></div>
+                            <div><dt>Всего чатов</dt><dd id="totalChats">—</dd></div>
+                            <div><dt>Автоответ включён</dt><dd id="activeChats">—</dd></div>
+                        </dl>
+                    </div>
+                </section>
+            </div>
+        </main>
+        <footer class="footer"><span class="eyebrow">Пульт управления</span><span>Telegram Mini App</span></footer>
+    </div>
 </body>
 </html>
