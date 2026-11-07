@@ -13,7 +13,6 @@ from aiogram.types import BusinessConnection, BusinessMessagesDeleted, InlineKey
 
 from config import ADMIN_ID
 from core.llm_client import ReplyError, llm_manager
-from core.persona import AUTO_REPLY_PREFIX
 from core.settings import number, reply_delays
 from database.db import db
 
@@ -247,7 +246,7 @@ async def on_business_message(message: Message, bot: Bot):
                 return
             try:
                 sent = await bot.send_message(
-                    chat_id=chat_id, text=AUTO_REPLY_PREFIX + chunk, parse_mode=None,
+                    chat_id=chat_id, text=chunk, parse_mode=None,
                     business_connection_id=conn_id,
                 )
             except TelegramAPIError as exc:

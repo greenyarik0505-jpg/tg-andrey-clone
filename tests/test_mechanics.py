@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 
 from bot import business
 from core.llm_client import LLMManager, ReplyError
-from core.persona import AUTO_REPLY_PREFIX
 from database.db import Database
 from webapp import server
 
@@ -104,12 +103,12 @@ class MechanicsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await restored.business_account(42))["username"], "friend")
 
     async def test_admin_is_correspondent_not_automation_owner(self):
-        with patch.object(business.llm_manager, "reply", new=AsyncMock(return_value=["Андреи"])) as model:
+        with patch.object(business.llm_manager, "reply", new=AsyncMock(return_value=["Андрей"])) as model:
             await business.on_business_message(incoming(), self.bot)
         self.assertEqual(len(self.bot.sent), 1)
         self.assertEqual(self.bot.sent[0]["chat_id"], 7)
         self.assertEqual(self.bot.sent[0]["business_connection_id"], "friend-connection")
-        self.assertEqual(self.bot.sent[0]["text"], AUTO_REPLY_PREFIX + "Андреи")
+        self.assertEqual(self.bot.sent[0]["text"], "Андрей")
         history = model.call_args.args[1]
         self.assertEqual(history[-1]["is_outgoing"], 0)
         await business.on_business_message(incoming(2, sender_id=42), self.bot)
@@ -221,18 +220,18 @@ class MechanicsTests(unittest.IsolatedAsyncioTestCase):
         captured = {}
         def provider(request):
             captured.update(json.loads(request.content))
-            return httpx.Response(200, json={"choices": [{"message": {"content": "Андреи"}}]})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Андрей"}}]})
         model = LLMManager()
         model.client = httpx.AsyncClient(transport=httpx.MockTransport(provider))
         try:
             response = await model.reply(await self.db.get_all_settings(), [{"text": "Как тебя зовут?"}])
         finally:
             await model.close()
-        self.assertEqual(response, ["Андреи"])
+        self.assertEqual(response, ["Андрей"])
         prompt = captured["messages"][0]["content"]
         self.assertIn("Имя персонажа — Андрей", prompt)
         self.assertIn("собеседнику Андрея", prompt)
-        self.assertIn("Как вам моц аккаунт в бравле?", prompt)
+        self.assertIn("Как вам мой аккаунт в бравле?", prompt)
 
 
 if __name__ == "__main__":
