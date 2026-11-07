@@ -3,8 +3,6 @@ import math
 
 import httpx
 
-from config import CUSTOM_PROVIDER_ORIGINS
-
 NUMERIC_LIMITS = {
     "temperature": (0, 1, 0.75),
     "min_delay": (0, 60, 6),
@@ -38,9 +36,6 @@ def custom_endpoint(value):
         or url.query or url.fragment or any(char in value for char in ("\\", "?", "#"))
     ):
         raise ValueError("Укажите HTTP(S) URL без логина, параметров и фрагмента.")
-    origin = f"{url.scheme}://{url.netloc.decode('ascii')}"
-    if origin not in CUSTOM_PROVIDER_ORIGINS:
-        raise ValueError("Адрес провайдера не входит в список CUSTOM_PROVIDER_ORIGINS.")
     path = url.path.rstrip("/")
     if not path.endswith("/chat/completions"):
         path += "/chat/completions"

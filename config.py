@@ -21,8 +21,3 @@ TELEGRAM_WEBHOOK_BASE_URL = (os.getenv("TELEGRAM_WEBHOOK_BASE_URL") or os.getenv
 # Database Path
 DB_PATH = os.getenv("DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.db")
 SETTINGS_ENCRYPTION_KEY = os.getenv("SETTINGS_ENCRYPTION_KEY", "").strip()
-CUSTOM_PROVIDER_ORIGINS = {
-    "https://api.openai.com", "https://openrouter.ai", "https://api.groq.com",
-    "https://api.deepseek.com", "https://api.together.xyz", "https://api.mistral.ai",
-    *(item.strip().rstrip("/") for item in os.getenv("CUSTOM_PROVIDER_ORIGINS", "").split(",") if item.strip()),
-}
