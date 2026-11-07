@@ -6,6 +6,9 @@ __pycache__/
 *.db-journal
 *.settings.key
 .env
+service-account*.json
+*.firebase-adminsdk*.json
+.venv/
 *.log
 *.pdf
 *.html

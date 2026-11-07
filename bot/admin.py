@@ -8,7 +8,7 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
-from bot.business import business_request_button, can_reply, fetch_connection
+from bot.business import ConnectionApprovalError, approve_account, business_request_button, can_reply
 from config import ADMIN_ID, WEBAPP_URL
 from core.llm_client import ReplyError, llm_manager
 from core.settings import number, reply_delays
@@ -144,21 +144,17 @@ async def cb_business(callback: CallbackQuery, bot: Bot):
 @admin_router.callback_query(F.data.regexp(r"^business_approve:[A-Za-z0-9_-]{16}$"))
 async def cb_approve_business(callback: CallbackQuery, bot: Bot):
     request_id = callback.data.split(":")[1]
-    requests = await db.business_requests(request_id)
-    if not requests:
-        await callback.answer("Запрос уже обработан или истёк.", show_alert=True)
-        return
-    request = requests[0]
-    connection = await fetch_connection(bot, request["connection_id"])
-    if not connection or not connection.is_enabled or connection.user.id != request["user_id"]:
-        await callback.answer("Подключение недоступно. Проверьте его в настройках Telegram.", show_alert=True)
-        return
-    if not await db.approve_business_request(request_id, connection.user.id):
-        await callback.answer("Запрос уже обработан или истёк.", show_alert=True)
+    try:
+        connection = await approve_account(request_id, bot)
+    except ConnectionApprovalError as exc:
+        await callback.answer(str(exc), show_alert=True)
         return
     await callback.answer("Аккаунт подтверждён.")
     status = "Автоответы готовы в разрешённых чатах." if can_reply(connection) else "Разрешите боту отвечать в настройках Telegram."
-    await callback.message.edit_text(f"Подтверждён аккаунт {request['name']}.\n{status}", reply_markup=back_keyboard())
+    await callback.message.edit_text(
+        f"Подключён аккаунт друга {connection.user.full_name}.\nПрофиль ответов — Андрей.\n{status}",
+        reply_markup=back_keyboard(),
+    )
 
 
 @admin_router.message(Command("status"))

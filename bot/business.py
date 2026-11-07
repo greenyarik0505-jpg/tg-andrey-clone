@@ -20,6 +20,7 @@ from database.db import db
 logger = logging.getLogger(__name__)
 business_router = Router()
 connections: dict[str, BusinessConnection] = {}
+BATCH_WINDOW_SECONDS = 2
 
 
 @dataclass
@@ -33,6 +34,39 @@ pending_chats = WeakValueDictionary()
 
 def can_reply(conn):
     return conn is not None and conn.is_enabled and bool(conn.rights and conn.rights.can_reply)
+
+
+def connection_record(conn):
+    return {
+        "user_id": conn.user.id,
+        "display_name": conn.user.full_name,
+        "username": conn.user.username,
+        "connection_id": conn.id,
+        "is_enabled": int(conn.is_enabled),
+        "can_reply": int(bool(conn.rights and conn.rights.can_reply)),
+        "connected_at": conn.date.timestamp(),
+    }
+
+
+class ConnectionApprovalError(Exception):
+    def __init__(self, message, status_code=409):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def approve_account(request_id, bot):
+    requests = await db.business_requests(request_id)
+    if not requests:
+        raise ConnectionApprovalError("Запрос уже обработан или истёк. Обновите состояние.")
+    request = requests[0]
+    connection = await fetch_connection(bot, request["connection_id"])
+    if not connection or not connection.is_enabled or connection.user.id != request["user_id"]:
+        raise ConnectionApprovalError("Подключение недоступно. Проверьте его в настройках Telegram.")
+    if not await db.approve_business_request(request_id, connection.user.id, connection_record(connection)):
+        raise ConnectionApprovalError("Запрос уже обработан или истёк. Обновите состояние.")
+    connections[connection.id] = connection
+    logger.info("Automation account approved for user %s", connection.user.id)
+    return connection
 
 
 async def fetch_connection(bot, connection_id):
@@ -76,6 +110,7 @@ async def get_connection(bot, connection_id, *, allow_request=False):
         return None
     owner = await db.business_owner()
     if conn.user.id == owner:
+        await db.save_business_account(connection_record(conn))
         return connections.setdefault(connection_id, conn)
     if allow_request and owner is None and conn.is_enabled:
         await request_approval(conn, bot)
@@ -95,6 +130,7 @@ async def on_business_connection(conn: BusinessConnection, bot: Bot):
     if conn.user.id != owner:
         return
     connections[conn.id] = conn
+    await db.save_business_account(connection_record(conn))
     status = "подключён" if conn.is_enabled else "отключён"
     rights = "есть" if can_reply(conn) else "нет"
     try:
@@ -164,6 +200,8 @@ async def on_business_message(message: Message, bot: Bot):
     state = await db.reply_state(chat_id, conn_id)
     if not text or not can_reply(connections.get(conn_id)) or not replies_allowed(state, timestamp):
         return
+    settings_revision = state["settings_revision"]
+    chat_revision = state["chat_revision"]
     history_id = await db.record_human_message(
         chat_id, sender.id, sender.full_name, text, message_id=message.message_id,
         connection_id=conn_id, timestamp=timestamp,
@@ -176,12 +214,14 @@ async def on_business_message(message: Message, bot: Bot):
         return (
             pending.newest == marker
             and state.get("latest_incoming") == history_id
+            and state.get("settings_revision") == settings_revision
+            and state.get("chat_revision") == chat_revision
             and replies_allowed(state, timestamp)
             and can_reply(connections.get(conn_id))
         )
 
     # Give successive messages a short window to arrive before generating a reply.
-    await asyncio.sleep(2)
+    await asyncio.sleep(BATCH_WINDOW_SECONDS)
     async with pending.lock:
         if not await still_allowed():
             return
@@ -195,6 +235,7 @@ async def on_business_message(message: Message, bot: Bot):
             chunks = await llm_manager.reply(settings, history)
         except ReplyError as exc:
             logger.warning("Automatic reply skipped: %s", exc)
+            await db.set_chat_error(chat_id, str(exc))
             return
 
         minimum, maximum = reply_delays(settings)
@@ -211,8 +252,10 @@ async def on_business_message(message: Message, bot: Bot):
                 )
             except TelegramAPIError as exc:
                 logger.warning("Could not send automatic reply (%s)", type(exc).__name__)
+                await db.set_chat_error(chat_id, "Telegram не принял ответ. Проверьте подключение и права.")
                 return
             await db.record_bot_message(chat_id, chunk, message_id=sent.message_id, connection_id=conn_id)
+            await db.set_chat_error(chat_id, "")
 
 
 @business_router.deleted_business_messages()

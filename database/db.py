@@ -1,4 +1,5 @@
 import aiosqlite
+import json
 import os
 import secrets
 import time
@@ -7,7 +8,10 @@ from typing import Dict, Any, List
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from config import BUSINESS_USER_ID, DB_PATH, SETTINGS_ENCRYPTION_KEY
+from config import (
+    ADMIN_ID, BOT_TOKEN, BUSINESS_USER_ID, DB_PATH, FIREBASE_PROJECT_ID,
+    FIREBASE_SERVICE_ACCOUNT_JSON, FIRESTORE_DATABASE_ID, SETTINGS_ENCRYPTION_KEY,
+)
 from core.settings import NUMERIC_LIMITS, TOGGLES, number, reply_delays, validate_settings
 
 ENCRYPTED_PREFIX = "fernet:"
@@ -53,6 +57,27 @@ CREATE TABLE IF NOT EXISTS business_requests (
     name TEXT NOT NULL,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS business_accounts (
+    user_id INTEGER PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    username TEXT,
+    connection_id TEXT,
+    is_enabled INTEGER,
+    can_reply INTEGER,
+    connected_at REAL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS telegram_updates (
+    update_id INTEGER PRIMARY KEY,
+    payload TEXT,
+    status TEXT NOT NULL,
+    lease_until REAL NOT NULL DEFAULT 0,
+    lease_token TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
 """
 
 DEFAULT_SETTINGS = {
@@ -71,9 +96,13 @@ DEFAULT_SETTINGS = {
 }
 
 class Database:
+    backend = "sqlite"
+    persistent = False
+
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         self.cipher = None
+        self.ready = False
 
     def _load_cipher(self, encrypted_values_exist: bool):
         if SETTINGS_ENCRYPTION_KEY:
@@ -141,6 +170,13 @@ class Database:
                 "ON message_history(connection_id, chat_id, telegram_message_id)"
             )
             await db.execute("CREATE INDEX IF NOT EXISTS history_chat ON message_history(chat_id, id)")
+            chat_columns = await db.execute_fetchall("PRAGMA table_info(chats)")
+            if not any(column[1] == "revision" for column in chat_columns):
+                await db.execute("ALTER TABLE chats ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+            if not any(column[1] == "last_reply_error" for column in chat_columns):
+                await db.execute("ALTER TABLE chats ADD COLUMN last_reply_error TEXT NOT NULL DEFAULT ''")
+                await db.execute("ALTER TABLE chats ADD COLUMN last_reply_error_at REAL NOT NULL DEFAULT 0")
+            await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('settings_revision', '0')")
             await db.executemany("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", DEFAULT_SETTINGS.items())
             normalized = {key: str(number(rows, key)) for key in NUMERIC_LIMITS}
             normalized["max_delay"] = str(reply_delays(rows)[1])
@@ -159,6 +195,66 @@ class Database:
             await db.commit()
             if migrated:
                 await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.ready = True
+
+    async def close(self):
+        self.ready = False
+
+    async def store_update(self, update):
+        payload = self.cipher.encrypt(json.dumps(update).encode()).decode()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO telegram_updates (update_id, payload, status, created_at) VALUES (?, ?, 'pending', ?)",
+                (update["update_id"], payload, time.time()),
+            )
+            await db.commit()
+
+    async def claim_updates(self, limit=128, lease_seconds=180):
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            rows = await db.execute_fetchall(
+                """SELECT update_id, payload FROM telegram_updates
+                    WHERE status IN ('pending', 'processing') AND lease_until <= ? AND attempts < 3
+                    ORDER BY update_id LIMIT ?""", (now, limit),
+            )
+            claimed = []
+            for update_id, payload in rows:
+                lease_token = secrets.token_hex(12)
+                await db.execute(
+                    """UPDATE telegram_updates SET status = 'processing', lease_until = ?,
+                        lease_token = ?, attempts = attempts + 1 WHERE update_id = ?""",
+                    (now + lease_seconds, lease_token, update_id),
+                )
+                claimed.append((json.loads(self.cipher.decrypt(payload.encode())), lease_token))
+            await db.commit()
+            return claimed
+
+    async def finish_update(self, update_id, lease_token, error_type=None):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            rows = await db.execute_fetchall(
+                "SELECT attempts FROM telegram_updates WHERE update_id = ? AND lease_token = ? AND status = 'processing'",
+                (update_id, lease_token),
+            )
+            if not rows:
+                return
+            attempts = rows[0][0]
+            if error_type == "Interrupted":
+                await db.execute(
+                    "UPDATE telegram_updates SET status = 'pending', lease_until = 0, attempts = ? WHERE update_id = ?",
+                    (max(0, attempts - 1), update_id),
+                )
+            elif error_type:
+                await db.execute(
+                    "UPDATE telegram_updates SET status = ?, lease_until = ? WHERE update_id = ?",
+                    ("failed" if attempts >= 3 else "pending", time.time() + attempts * 5, update_id),
+                )
+            else:
+                await db.execute(
+                    "UPDATE telegram_updates SET status = 'done', payload = NULL WHERE update_id = ?", (update_id,),
+                )
+            await db.commit()
 
     async def get_setting(self, key: str, default: str = "") -> str:
         async with aiosqlite.connect(self.db_path) as db:
@@ -189,8 +285,11 @@ class Database:
     async def update_settings(self, settings: Dict[str, Any]):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
-            settings = validate_settings(settings, await self._read_settings(db))
+            current = await self._read_settings(db)
+            settings = validate_settings(settings, current)
             await self._write_settings(db, settings)
+            if any(current.get(key) != value for key, value in settings.items()):
+                await db.execute("UPDATE settings SET value = CAST(value AS INTEGER) + 1 WHERE key = 'settings_revision'")
             await db.commit()
 
     async def toggle_pause(self):
@@ -199,6 +298,7 @@ class Database:
             (row,) = await db.execute_fetchall("SELECT value FROM settings WHERE key = 'is_paused'")
             paused = row[0] != "1"
             await self._write_settings(db, {"is_paused": "1" if paused else "0"})
+            await db.execute("UPDATE settings SET value = CAST(value AS INTEGER) + 1 WHERE key = 'settings_revision'")
             await db.commit()
             return paused
 
@@ -224,6 +324,11 @@ class Database:
                 "INSERT OR IGNORE INTO business_requests (id, connection_id, user_id, name, created_at) VALUES (?, ?, ?, ?, ?)",
                 (request_id, connection_id, user_id, name, now),
             )
+            if cursor.rowcount == 0:
+                await db.execute(
+                    "UPDATE business_requests SET name = ?, created_at = ? WHERE connection_id = ? AND user_id = ?",
+                    (name, now, connection_id, user_id),
+                )
             await db.commit()
             return request_id if cursor.rowcount == 1 else None
 
@@ -242,7 +347,7 @@ class Database:
             await db.execute("DELETE FROM business_requests WHERE connection_id = ?", (connection_id,))
             await db.commit()
 
-    async def approve_business_request(self, request_id, user_id):
+    async def approve_business_request(self, request_id, user_id, account):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("BEGIN IMMEDIATE")
             rows = dict(await db.execute_fetchall(
@@ -257,9 +362,51 @@ class Database:
             if not request:
                 return False
             await self._write_settings(db, {"business_owner_id": user_id, "business_owner_verified": "1"})
+            await self._save_business_account(db, account)
             await db.execute("DELETE FROM business_requests")
             await db.commit()
             return True
+
+    async def _save_business_account(self, connection, account):
+        await connection.execute(
+            """INSERT INTO business_accounts
+                (user_id, display_name, username, connection_id, is_enabled, can_reply, connected_at, updated_at)
+                VALUES (:user_id, :display_name, :username, :connection_id, :is_enabled, :can_reply, :connected_at, :updated_at)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    display_name = excluded.display_name, username = excluded.username,
+                    connection_id = excluded.connection_id, is_enabled = excluded.is_enabled,
+                    can_reply = excluded.can_reply, connected_at = excluded.connected_at, updated_at = excluded.updated_at
+                WHERE business_accounts.connected_at IS NULL OR excluded.connected_at >= business_accounts.connected_at""",
+            {**account, "updated_at": time.time()},
+        )
+
+    async def save_business_account(self, account):
+        async with aiosqlite.connect(self.db_path) as db:
+            await self._save_business_account(db, account)
+            await db.commit()
+
+    async def save_account_identity(self, user_id, display_name, username):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """INSERT INTO business_accounts (user_id, display_name, username, updated_at)
+                    VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET
+                    display_name = excluded.display_name, username = excluded.username""",
+                (user_id, display_name, username, time.time()),
+            )
+            await db.commit()
+
+    async def business_account(self, user_id):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            rows = await db.execute_fetchall("SELECT * FROM business_accounts WHERE user_id = ?", (user_id,))
+            return dict(rows[0]) if rows else None
+
+    async def last_business_connection(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            rows = await db.execute_fetchall(
+                "SELECT connection_id FROM message_history WHERE connection_id IS NOT NULL ORDER BY id DESC LIMIT 1"
+            )
+            return rows[0][0] if rows else None
 
     async def get_or_create_chat(self, chat_id: int, chat_title: str = "", username: str = "") -> Dict[str, Any]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -276,11 +423,20 @@ class Database:
     async def set_chat_enabled(self, chat_id: int, is_enabled: bool):
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "UPDATE chats SET is_enabled = ? WHERE chat_id = ?",
-                (1 if is_enabled else 0, chat_id)
+                """UPDATE chats SET revision = revision + CASE WHEN is_enabled != ? THEN 1 ELSE 0 END,
+                    is_enabled = ? WHERE chat_id = ?""",
+                (int(is_enabled), int(is_enabled), chat_id)
             )
             await db.commit()
             return cursor.rowcount == 1
+
+    async def set_chat_error(self, chat_id, message):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE chats SET last_reply_error = ?, last_reply_error_at = ? WHERE chat_id = ?",
+                (message, time.time() if message else 0, chat_id),
+            )
+            await db.commit()
 
     async def list_chats(self) -> List[Dict[str, Any]]:
         async with aiosqlite.connect(self.db_path) as db:
@@ -344,7 +500,9 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             rows = await db.execute_fetchall(
-                """SELECT is_enabled, COALESCE(last_human_message_time, 0) AS last_human_message_time,
+                """SELECT is_enabled, revision AS chat_revision,
+                    COALESCE(last_human_message_time, 0) AS last_human_message_time,
+                    (SELECT value FROM settings WHERE key = 'settings_revision') AS settings_revision,
                     (SELECT value FROM settings WHERE key = 'is_paused') AS is_paused,
                     (SELECT value FROM settings WHERE key = 'human_takeover_minutes') AS human_takeover_minutes,
                     (SELECT id FROM message_history WHERE chat_id = chats.chat_id AND connection_id = ?
@@ -382,4 +540,17 @@ class Database:
             )
             return dict(stats)
 
-db = Database()
+if FIREBASE_PROJECT_ID:
+    from database.firestore_db import FirestoreDatabase
+
+    db = FirestoreDatabase(
+        project=FIREBASE_PROJECT_ID,
+        database=FIRESTORE_DATABASE_ID,
+        namespace=BOT_TOKEN.split(":")[0] if BOT_TOKEN else str(ADMIN_ID),
+        defaults=DEFAULT_SETTINGS,
+        encryption_key=SETTINGS_ENCRYPTION_KEY,
+        service_account_json=FIREBASE_SERVICE_ACCOUNT_JSON,
+        owner_id=BUSINESS_USER_ID,
+    )
+else:
+    db = Database()

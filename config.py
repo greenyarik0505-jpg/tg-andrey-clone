@@ -21,3 +21,6 @@ TELEGRAM_WEBHOOK_BASE_URL = (os.getenv("TELEGRAM_WEBHOOK_BASE_URL") or os.getenv
 # Database Path
 DB_PATH = os.getenv("DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_data.db")
 SETTINGS_ENCRYPTION_KEY = os.getenv("SETTINGS_ENCRYPTION_KEY", "").strip()
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "").strip()
+FIRESTORE_DATABASE_ID = os.getenv("FIRESTORE_DATABASE_ID", "bot-state").strip()
+FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()

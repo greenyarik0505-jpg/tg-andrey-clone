@@ -8,7 +8,10 @@ let authorization = telegramAuth;
 let settings = {};
 let chats = [];
 let settingsSaving = false;
-let pauseRevision = 0;
+let connectionState = null;
+let connectionLoading = false;
+let connectionRevision = 0;
+let approvalPending = false;
 let accessLoading = false;
 let chatsLoading = false;
 let statsLoading = false;
@@ -108,22 +111,153 @@ function renderKeyStatus() {
 
 function renderPause() {
     const paused = settings.is_paused === "1";
-    const hasProvider = Boolean(settings.custom_base_url && settings.custom_model_name);
-    get("overviewTitle").closest(".overview").dataset.state = paused || !hasProvider ? "paused" : "active";
-    if (paused) {
-        get("replyStatus").textContent = "На паузе";
-        get("replySummary").textContent = "Бот не отвечает, пока действует глобальная пауза.";
-    } else if (!hasProvider) {
-        get("replyStatus").textContent = "Нужен провайдер";
-        get("replySummary").textContent = "Укажите Base URL и ID модели, чтобы бот мог отвечать.";
-    } else {
-        get("replyStatus").textContent = "Разрешены";
-        get("replySummary").textContent = "Бот может отвечать в разрешённых чатах Telegram. Автоответы помечены как ответы ИИ.";
-    }
+    const labels = {
+        no_bot: "Бот не запущен",
+        needs_approval: "Нужно подтверждение",
+        waiting_for_connection: "Ждём подключение",
+        disconnected: "Отключён",
+        missing_rights: "Нет прав",
+        provider_missing: "Нужен провайдер",
+        paused: "На паузе",
+        ready: "Готов к ответам",
+    };
+    const status = connectionState?.reply_status;
+    let tone = "unknown";
+    if (status === "ready") tone = "active";
+    else if (status === "no_bot" || status === "disconnected") tone = "error";
+    else if (labels[status]) tone = "paused";
+    if (connectionLoading) tone = "unknown";
+    get("overviewTitle").closest(".overview").dataset.state = tone;
+    get("replyStatus").textContent = connectionLoading
+        ? "Проверяем"
+        : labels[status] || "Статус неизвестен";
+    get("replySummary").textContent = connectionLoading
+        ? "Обновляем сведения о боте и аккаунте Telegram."
+        : connectionState?.message || "Не удалось проверить подключение. Нажмите «Обновить» в карточке аккаунта.";
     const button = get("pauseButton");
     button.textContent = paused ? "Возобновить автоответы" : "Поставить на паузу";
     button.disabled = settingsSaving;
 }
+
+function permissionLabel(value, allowed, denied) {
+    return value === true ? allowed : value === false ? denied : "Неизвестно";
+}
+
+function renderConnection() {
+    const state = connectionState;
+    const account = state?.account;
+    const bot = state?.bot;
+    get("refreshConnection").disabled = connectionLoading || approvalPending;
+    get("connectionPanel").setAttribute("aria-busy", String(connectionLoading || approvalPending));
+    get("accountName").textContent = account
+        ? account.display_name || account.username || "Аккаунт Telegram"
+        : state ? "Аккаунт пока не выбран" : "Подключение не проверено";
+    get("accountUsername").textContent = account?.username ? "@" + account.username.replace(/^@/, "") : "";
+    get("accountId").textContent = account?.user_id ? "ID " + account.user_id : "";
+    get("personaName").textContent = "Профиль ответов — " + (state?.persona?.name || "Андрей");
+    get("connectionAdmin").textContent = state?.admin?.user_id ? "ID " + state.admin.user_id : "Неизвестно";
+    const botName = bot?.username ? "@" + bot.username.replace(/^@/, "") : "Бот";
+    get("connectionBot").textContent = bot
+        ? !bot.configured ? "Не настроен" : bot.running ? botName + " · запущен" : botName + " · остановлен"
+        : "Неизвестно";
+    get("accountEnabled").textContent = permissionLabel(account?.is_enabled, "Подключён", "Отключён");
+    get("accountCanReply").textContent = permissionLabel(account?.can_reply, "Есть", "Нет");
+    get("botChatAccess").textContent = permissionLabel(bot?.chat_access_enabled, "Включён", "Выключен");
+    const storage = state?.storage?.backend || "";
+    const storageNames = { firebase: "Firebase", sqlite: "SQLite (локально)" };
+    get("connectionStorageRow").hidden = !storage;
+    get("connectionStorage").textContent = storageNames[storage.toLowerCase()] || storage;
+
+    const waiting = state?.reply_status === "waiting_for_connection";
+    const disconnected = state?.reply_status === "disconnected";
+    const missingRights = state?.reply_status === "missing_rights";
+    const hint = get("connectionHint");
+    hint.hidden = !waiting && !disconnected && !missingRights;
+    hint.textContent = missingRights
+        ? "В аккаунте Андрея откройте Настройки → Автоматизация чатов и разрешите боту отвечать в нужных чатах. Затем обновите статус."
+        : "В аккаунте Андрея откройте Настройки → Автоматизация чатов и выберите этого бота. Если подключение уже включено, выключите и включите его снова, затем нажмите «Обновить».";
+
+    const updated = account?.updated_at ? new Date(account.updated_at * 1000) : null;
+    const updatedLabel = get("connectionUpdated");
+    updatedLabel.hidden = !updated || !Number.isFinite(updated.getTime());
+    updatedLabel.textContent = updatedLabel.hidden ? "" : "Последнее событие Telegram · " + updated.toLocaleString("ru");
+
+    const approvals = state?.pending || [];
+    get("pendingApprovals").hidden = !approvals.length;
+    const list = get("approvalList");
+    list.replaceChildren();
+    for (const approval of approvals) {
+        const row = document.createElement("li");
+        row.className = "approval-row";
+        const identity = document.createElement("div");
+        const name = document.createElement("strong");
+        name.textContent = approval.name || "Аккаунт Telegram";
+        const id = document.createElement("small");
+        id.textContent = "ID " + approval.user_id;
+        identity.append(name, id);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "button";
+        button.textContent = "Подтвердить аккаунт";
+        button.setAttribute("aria-label", "Подтвердить аккаунт «" + name.textContent + "», ID " + approval.user_id);
+        button.disabled = connectionLoading || approvalPending || settingsSaving;
+        button.addEventListener("click", () => approveConnection(approval));
+        row.append(identity, button);
+        list.append(row);
+    }
+    renderPause();
+}
+
+async function loadConnection() {
+    if (approvalPending) return true;
+    const revision = ++connectionRevision;
+    connectionLoading = true;
+    feedback("connectionFeedback", "Проверяем подключение…");
+    renderConnection();
+    try {
+        const [state, currentSettings] = await Promise.all([
+            request("/api/connection"),
+            request("/api/settings"),
+        ]);
+        if (revision !== connectionRevision) return true;
+        connectionState = state;
+        settings = currentSettings.settings;
+        renderKeyStatus();
+        feedback("connectionFeedback");
+        return true;
+    } catch (error) {
+        if (revision === connectionRevision) {
+            connectionState = null;
+            feedback("connectionFeedback", error.message, true);
+        }
+        return false;
+    } finally {
+        if (revision === connectionRevision) {
+            connectionLoading = false;
+            renderConnection();
+        }
+    }
+}
+
+async function approveConnection(approval) {
+    if (approvalPending || connectionLoading || settingsSaving) return;
+    approvalPending = true;
+    const revision = ++connectionRevision;
+    feedback("connectionFeedback", "Подтверждаем аккаунт…");
+    renderConnection();
+    try {
+        const state = await request("/api/connection/approve", { request_id: approval.id });
+        if (revision === connectionRevision) connectionState = state;
+        feedback("connectionFeedback", "Аккаунт подтверждён. Проверьте статус автоответов.");
+    } catch (error) {
+        feedback("connectionFeedback", error.message, true);
+    } finally {
+        approvalPending = false;
+        renderConnection();
+    }
+}
+
+get("refreshConnection").addEventListener("click", loadConnection);
 
 function updateTemperature() {
     get("temperatureValue").value = Number(get("temperature").value).toLocaleString("ru", {
@@ -162,6 +296,7 @@ async function connect() {
         get("dashboard").hidden = false;
         get("accessLabel").textContent = telegramAuth ? "Администратор" : "Локальный вход";
         get("accessLabel").dataset.authenticated = "true";
+        await loadConnection();
         const current = tabs.find((tab) => tab.getAttribute("aria-selected") === "true");
         selectTab(current);
     } catch (error) {
@@ -212,8 +347,8 @@ get("localForm").addEventListener("submit", (event) => {
 });
 
 async function save(payload, button, feedbackId, onSaved) {
-    if (settingsSaving) {
-        feedback(feedbackId, "Дождитесь завершения предыдущего сохранения.", true);
+    if (settingsSaving || approvalPending) {
+        feedback(feedbackId, "Дождитесь завершения предыдущего действия.", true);
         return;
     }
     settingsSaving = true;
@@ -221,6 +356,7 @@ async function save(payload, button, feedbackId, onSaved) {
     pauseButton.disabled = true;
     button.disabled = true;
     feedback(feedbackId, "Сохраняем…");
+    renderConnection();
     try {
         await request("/api/settings", payload);
         for (const [key, value] of Object.entries(payload)) {
@@ -231,21 +367,21 @@ async function save(payload, button, feedbackId, onSaved) {
             }
         }
         const confirmation = await onSaved?.();
-        feedback(feedbackId, confirmation || "Сохранено.");
+        const connectionUpdated = await loadConnection();
+        const statusMessage = connectionUpdated ? "" : " Статус подключения обновить не удалось.";
+        feedback(feedbackId, (confirmation || "Сохранено.") + statusMessage);
     } catch (error) {
         feedback(feedbackId, error.message, true);
     } finally {
         settingsSaving = false;
         button.disabled = false;
-        renderPause();
+        renderConnection();
     }
 }
 
 get("pauseButton").addEventListener("click", async (event) => {
     const pause = settings.is_paused === "1" ? "0" : "1";
-    pauseRevision += 1;
     await save({ is_paused: pause }, event.currentTarget, "pauseFeedback");
-    pauseRevision += 1;
 });
 get("customForm").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -261,16 +397,9 @@ get("customForm").addEventListener("submit", (event) => {
         return;
     }
     if (keyValue) payload.custom_api_key = keyValue;
-    save(payload, event.submitter || event.currentTarget.querySelector('button[type="submit"]'), "customFeedback", async () => {
+    save(payload, event.submitter || event.currentTarget.querySelector('button[type="submit"]'), "customFeedback", () => {
         if (payload.custom_api_key === key.value.trim()) key.value = "";
-        try {
-            const data = await request("/api/settings");
-            settings.has_custom_api_key = data.settings.has_custom_api_key;
-        } catch {
-            settings.has_custom_api_key = null;
-            renderKeyStatus();
-            return "Сохранено. Не удалось обновить статус ключа.";
-        }
+        settings.has_custom_api_key = null;
         renderKeyStatus();
     });
 });
@@ -323,6 +452,12 @@ function renderChats() {
         const subtitle = document.createElement("small");
         subtitle.textContent = chat.username ? "@" + chat.username : "ID " + chat.chat_id;
         text.append(name, subtitle);
+        if (chat.last_reply_error) {
+            const error = document.createElement("small");
+            error.className = "chat-error";
+            error.textContent = "Последняя ошибка · " + chat.last_reply_error;
+            text.append(error);
+        }
         const control = document.createElement("input");
         control.className = "switch";
         control.type = "checkbox";
@@ -381,11 +516,10 @@ get("chatSearch").addEventListener("input", renderChats);
 async function loadStats() {
     if (statsLoading) return;
     statsLoading = true;
-    const revision = pauseRevision;
     get("refreshStats").disabled = true;
     feedback("statsFeedback", "Загружаем статистику…");
     try {
-        const { stats, is_paused: paused } = await request("/api/stats");
+        const { stats } = await request("/api/stats");
         const statsFields = {
             totalSent: stats.total_sent,
             totalReceived: stats.total_received,
@@ -395,11 +529,8 @@ async function loadStats() {
         for (const [id, count] of Object.entries(statsFields)) {
             get(id).textContent = count.toLocaleString("ru");
         }
-        if (typeof paused === "boolean" && revision === pauseRevision && !settingsSaving) {
-            settings.is_paused = paused ? "1" : "0";
-            renderPause();
-        }
         feedback("statsFeedback");
+        await loadConnection();
     } catch (error) {
         feedback("statsFeedback", error.message, true);
     } finally {

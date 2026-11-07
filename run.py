@@ -40,6 +40,7 @@ async def main():
         return
 
     bot, dispatcher = create_bot_and_dispatcher(BOT_TOKEN)
+    app.state.telegram_bot = bot
     bot_task = asyncio.create_task(start_bot(bot, dispatcher))
     try:
         done, _ = await asyncio.wait({web_task, bot_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -56,6 +57,7 @@ async def main():
                 bot_task.cancel()
         await asyncio.gather(web_task, bot_task, return_exceptions=True)
         await llm_manager.close()
+        await db.close()
 
 
 if __name__ == "__main__":
