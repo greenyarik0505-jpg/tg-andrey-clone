@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+import asyncio
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated
@@ -16,9 +17,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from bot.webhook import WEBHOOK_PATH, TelegramWebhook
+from bot.business import ConnectionApprovalError, approve_account, connections, get_connection
 from config import ADMIN_ID, BOT_TOKEN, LOCAL_ADMIN_TOKEN, TELEGRAM_WEBHOOK_BASE_URL
 from core.llm_client import ReplyError, llm_manager
 from core.settings import NUMERIC_LIMITS, TOGGLES
+from core.persona import PERSONA_NAME
 from database.db import db
 
 logger = logging.getLogger(__name__)
@@ -29,10 +32,12 @@ INIT_DATA_MAX_AGE = 3600
 
 @asynccontextmanager
 async def lifespan(app):
-    if db.cipher is None:
+    if not db.ready:
         await db.init()
     webhook = TelegramWebhook(BOT_TOKEN) if BOT_TOKEN and TELEGRAM_WEBHOOK_BASE_URL else None
     app.state.telegram_webhook = webhook
+    if webhook:
+        app.state.telegram_bot = webhook.bot
     try:
         if webhook:
             await webhook.start(TELEGRAM_WEBHOOK_BASE_URL)
@@ -42,6 +47,7 @@ async def lifespan(app):
             await webhook.close()
         if not getattr(app.state, "unified_runner", False):
             await llm_manager.close()
+            await db.close()
 
 
 app = FastAPI(title="Telegram Business Dashboard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -118,6 +124,11 @@ class TestMessage(BaseModel):
     message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4096)]
 
 
+class ConnectionApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{16}$")]
+
+
 @app.exception_handler(RequestValidationError)
 async def bad_payload(request, exc):
     # Validation details may include secrets copied from the submitted body.
@@ -162,8 +173,11 @@ async def telegram_update(request: Request):
         raise HTTPException(400) from None
     if not isinstance(update, dict) or type(update.get("update_id")) is not int:
         raise HTTPException(400)
-    if not webhook.enqueue(update):
-        raise HTTPException(503)
+    try:
+        await webhook.enqueue(update)
+    except Exception as exc:
+        logger.error("Could not persist incoming Telegram update (%s)", type(exc).__name__)
+        raise HTTPException(503) from None
     return {"ok": True}
 
 
@@ -191,6 +205,84 @@ async def update_settings(payload: SettingsUpdate):
 @api.get("/chats")
 async def get_chats():
     return {"chats": await db.list_chats()}
+
+
+async def connection_status(request):
+    bot = getattr(request.app.state, "telegram_bot", None)
+    owner = await db.business_owner()
+    account = await db.business_account(owner) if owner else None
+    bot_info = {"configured": bool(BOT_TOKEN), "running": bot is not None, "username": None, "chat_access_enabled": None}
+    telegram_available = False
+    if bot:
+        try:
+            async with asyncio.timeout(8):
+                identity = await bot.get_me()
+                telegram_available = True
+                bot_info.update(username=identity.username, chat_access_enabled=bool(identity.can_connect_to_business))
+                if owner:
+                    connection_id = account.get("connection_id") if account else await db.last_business_connection()
+                    if connection_id:
+                        await get_connection(bot, connection_id)
+                        account = await db.business_account(owner)
+                    if not account:
+                        user_chat = await bot.get_chat(owner)
+                        await db.save_account_identity(owner, user_chat.full_name, user_chat.username)
+                        account = await db.business_account(owner)
+        except Exception as exc:
+            logger.warning("Could not refresh Telegram account metadata (%s)", type(exc).__name__)
+    if owner:
+        account = account or {"user_id": owner, "display_name": None, "username": None, "updated_at": None}
+        live = connections.get(account.get("connection_id"))
+        account["is_enabled"] = live.is_enabled if live else None
+        account["can_reply"] = bool(live.rights and live.rights.can_reply) if live else None
+    pending = await db.business_requests() if owner is None else []
+    pending = [{key: item[key] for key in ("id", "name", "user_id")} for item in pending]
+    settings = await db.get_all_settings()
+    if not bot or not telegram_available:
+        bot_info["running"] = False
+        status, message = "no_bot", "Нет подтверждённой связи с Telegram. Проверьте токен бота и доступность сервиса."
+    elif bot_info["chat_access_enabled"] is False:
+        status, message = "missing_rights", "Включите Chat Access Mode для этого бота в BotFather."
+    elif settings["is_paused"] == "1":
+        status, message = "paused", "Автоответы на общей паузе."
+    elif not owner:
+        status, message = "needs_approval", (
+            "Подтвердите аккаунт друга в карточке подключения." if pending else
+            "Подключите бота на аккаунте Андрея через «Автоматизацию чатов». Если он уже добавлен, отправьте Андрею сообщение или переключите подключение в Telegram."
+        )
+    elif account["is_enabled"] is None:
+        status, message = "waiting_for_connection", "Аккаунт подтверждён. Ожидаем событие подключения или сообщение из Telegram."
+    elif not account["is_enabled"]:
+        status, message = "disconnected", "Аккаунт отключил бота в Telegram. Проверьте «Автоматизацию чатов»."
+    elif not account["can_reply"]:
+        status, message = "missing_rights", "У бота нет права отвечать от имени подключённого аккаунта."
+    elif not settings["custom_base_url"] or not settings["custom_model_name"]:
+        status, message = "provider_missing", "Аккаунт подключён. Укажите Base URL и ID модели для ответов."
+    else:
+        status, message = "ready", "Аккаунт подключён, провайдер настроен. Бот отвечает в разрешённых чатах в стиле Андрея."
+    return {
+        "admin": {"user_id": ADMIN_ID}, "persona": {"name": PERSONA_NAME},
+        "bot": bot_info, "account": account, "pending": pending,
+        "storage": {"backend": db.backend, "persistent": db.persistent},
+        "reply_status": status, "message": message,
+    }
+
+
+@api.get("/connection")
+async def get_connection_status(request: Request):
+    return await connection_status(request)
+
+
+@api.post("/connection/approve")
+async def approve_connection(payload: ConnectionApproval, request: Request):
+    bot = getattr(request.app.state, "telegram_bot", None)
+    if bot is None:
+        raise HTTPException(503, "Telegram-бот не запущен.")
+    try:
+        await approve_account(payload.request_id, bot)
+    except ConnectionApprovalError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
+    return await connection_status(request)
 
 
 @api.post("/chats/toggle")

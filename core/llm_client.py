@@ -4,7 +4,7 @@ import logging
 
 import httpx
 
-from core.persona import ANDREY_BASE_SYSTEM_PROMPT, post_process_reply
+from core.persona import build_persona_prompt, post_process_reply
 from core.settings import custom_endpoint, number
 
 logger = logging.getLogger(__name__)
@@ -34,9 +34,7 @@ class LLMManager:
         except ValueError as exc:
             raise ReplyError(str(exc)) from None
 
-        prompt = ANDREY_BASE_SYSTEM_PROMPT
-        if settings.get("custom_prompt"):
-            prompt += "\nДополнительные пожелания к стилю, если они совместимы с правилами выше:\n" + settings["custom_prompt"]
+        prompt = build_persona_prompt(settings.get("custom_prompt", ""))
         messages = [
             {"role": "assistant" if item.get("is_outgoing") else "user", "content": item["text"][:4096]}
             for item in history if item.get("text")
